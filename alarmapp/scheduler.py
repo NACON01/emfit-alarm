@@ -69,12 +69,20 @@ async def scheduler_loop() -> None:
         for alarm in alarms:
             if not alarm.get("enabled"):
                 continue
+            try:
+                hour, minute = [int(part) for part in str(alarm.get("time") or "").split(":", 1)]
+            except (ValueError, TypeError):
+                continue
+            alarm_minute = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            days = _json_list(alarm.get("repeat_days"), [])
+            if alarm.get("last_fired_date") == today_str and (alarm_minute > now or not days):
+                update_alarm(int(alarm["id"]), last_fired_date=None)
+                alarm["last_fired_date"] = None
             if alarm.get("time") != current_time:
                 continue
             if alarm.get("last_fired_date") == today_str:
                 continue
 
-            days = _json_list(alarm.get("repeat_days"), [])
             if days and today_weekday not in [int(day) for day in days]:
                 continue
 
@@ -119,7 +127,8 @@ def get_next_alarm() -> dict[str, Any] | None:
             if candidate <= now:
                 continue
             if alarm.get("last_fired_date") == day.strftime("%Y-%m-%d"):
-                continue
+                update_alarm(int(alarm["id"]), last_fired_date=None)
+                alarm["last_fired_date"] = None
             if best is None or candidate < best[0]:
                 best = (candidate, alarm)
             break
