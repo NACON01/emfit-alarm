@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+import db
+import scheduler
+
+
+def test_editing_fired_alarm_clears_last_fired_date(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "alarm.db")
+    monkeypatch.setattr(scheduler, "get_all_alarms", db.get_all_alarms)
+
+    now = datetime.now()
+    later = now + timedelta(minutes=5)
+    alarm = db.create_alarm(
+        label="Later",
+        time=now.strftime("%H:%M"),
+        repeat_days=[],
+        enabled=False,
+        last_fired_date=now.strftime("%Y-%m-%d"),
+    )
+
+    updated = db.update_alarm(alarm["id"], time=later.strftime("%H:%M"), enabled=True)
+    assert updated is not None
+    assert updated["last_fired_date"] is None
+
+    next_alarm = scheduler.get_next_alarm()
+    assert next_alarm is not None
+    assert next_alarm["id"] == alarm["id"]
+    assert 0 < next_alarm["seconds_until"] < 10 * 60

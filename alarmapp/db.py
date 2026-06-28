@@ -160,6 +160,14 @@ def create_alarm(**kwargs: Any) -> dict[str, Any]:
 def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
     init_db()
     updates: dict[str, Any] = {}
+    should_clear_fired_date = (
+        "last_fired_date" not in kwargs
+        and (
+            "time" in kwargs
+            or "repeat_days" in kwargs
+            or kwargs.get("enabled") is True
+        )
+    )
     for key, value in kwargs.items():
         if key not in ALARM_FIELDS:
             continue
@@ -170,6 +178,9 @@ def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
         elif key == "volume" and value is not None:
             value = float(value)
         updates[key] = value
+
+    if should_clear_fired_date:
+        updates["last_fired_date"] = None
 
     if not updates:
         return get_alarm(alarm_id)
