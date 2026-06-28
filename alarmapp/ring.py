@@ -102,7 +102,10 @@ class RingSession:
 
     async def start(self) -> None:
         LOGGER.info("starting ring session alarm=%s device=%s", self.alarm_id, self.device_name)
-        self._recast()
+        if self.emfit_enabled and emfit.cached_in_bed() is False:
+            self._enter_out()
+        else:
+            self._recast()
         try:
             while self.ended_reason is None:
                 await self._tick()

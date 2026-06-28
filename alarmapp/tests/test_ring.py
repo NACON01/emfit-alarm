@@ -33,6 +33,9 @@ class FakeCastSession:
         self.stop_calls += 1
         return True
 
+    def disconnect(self) -> None:
+        return None
+
     def set_volume(self, level: float) -> bool:
         self.set_volume_calls.append(level)
         self.volume = level
@@ -91,6 +94,18 @@ async def set_in_bed(monkeypatch, values):
         return values[-1] if values else None
 
     monkeypatch.setattr(emfit, "cached_in_bed", fake_cached_in_bed)
+
+
+@pytest.mark.asyncio
+async def test_start_out_of_bed_does_not_ring_and_confirms_woke(monkeypatch):
+    await set_in_bed(monkeypatch, [False, False, False, False, False])
+    alarm = session(emfit_enabled=True, awake_confirm_sec=0.1, tick_sec=0.02)
+    cast = FakeCastSession.instances[-1]
+
+    await alarm.start()
+
+    assert alarm.ended_reason == "woke"
+    assert cast.play_calls == []
 
 
 @pytest.mark.asyncio
