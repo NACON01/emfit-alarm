@@ -1,0 +1,3 @@
+[submodule "emfit-api"]
+	path = emfit-api
+	url = https://github.com/PenguinEino/emfit-api.git

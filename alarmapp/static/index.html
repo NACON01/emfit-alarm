@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Wake Alarm</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <header id="hero-header" class="hero-header">
+      <div class="hero-inner">
+        <div class="clock-stack" aria-live="polite">
+          <div class="clock-line">
+            <span id="live-clock">--:--</span>
+            <span id="live-seconds">--</span>
+          </div>
+          <div id="today-date" class="today-date">----</div>
+        </div>
+        <div class="hero-side">
+          <div id="sensor-pill" class="sensor-pill sensor-none" title="emfit 在床センサー">
+            <span id="sensor-dot" class="sensor-dot"></span>
+            <span id="sensor-text">センサー確認中…</span>
+          </div>
+          <div id="next-alarm-pill" class="next-pill">アラームなし</div>
+        </div>
+      </div>
+    </header>
+
+    <section id="ringing-panel" class="ringing-panel hidden" aria-live="assertive">
+      <div class="ringing-copy">
+        <div id="ringing-title" class="ringing-title">READY</div>
+        <div id="ringing-label" class="ringing-label">待機中</div>
+        <div id="ringing-meta" class="ringing-meta"></div>
+      </div>
+      <button id="stop-ring" class="button button-stop" type="button" title="音を一時停止します。起きなければ再び鳴ります。">スヌーズ</button>
+    </section>
+
+    <main class="app-main">
+      <section id="action-row" class="action-row" aria-label="アラーム操作">
+        <div class="test-actions">
+          <div class="test-button-row">
+            <button id="test-ring" class="button button-outline" type="button">テスト再生</button>
+            <button id="test-real-ring" class="button button-outline button-real-test" type="button" aria-describedby="real-test-help">本番テスト</button>
+          </div>
+          <div id="real-test-help" class="test-help">本番テストは実動作確認：スピーカーをタップしてスヌーズ / ベッドから出ると終了。2分で自動停止。</div>
+        </div>
+        <div id="alarm-count" class="alarm-count">0件のアラーム</div>
+        <button id="settings-toggle" class="icon-button" type="button" aria-label="設定を開く" aria-expanded="false">⚙</button>
+      </section>
+
+      <section id="settings-panel" class="settings-panel collapsed" aria-label="設定">
+        <form id="settings-form" class="settings-form">
+          <div class="settings-group">
+            <h2>センサー設定</h2>
+            <label class="switch-row">
+              <span class="field-copy">
+                <span>emfit センサー 有効</span>
+                <span class="field-help">オンで睡眠センサーの在床/離床を使い「ベッドから出るまで鳴らし続ける」。オフは普通の目覚まし（音だけ）。</span>
+              </span>
+              <span class="switch"><input id="setting-emfit-enabled" type="checkbox"><span class="slider"></span></span>
+            </label>
+            <label>
+              <span>起床確定(連続離床) <small>分</small></span>
+              <input id="setting-awake-confirm-sec" type="number" min="0" step="1">
+              <span class="field-help">ベッドから出た状態がこの分数続いたら『起床』と判定して終了。短いと二度寝しやすい。例:3分</span>
+            </label>
+            <label>
+              <span>センサー無応答→再鳴動(秒)</span>
+              <input id="setting-none-continue-sec" type="number" min="0" step="1">
+              <span class="field-help">センサーが応答しない状態がこの秒数続いたら安全のため再び鳴らす（寝過ごし防止）。例:60秒</span>
+            </label>
+          </div>
+
+          <div class="settings-group">
+            <h2>アラーム動作</h2>
+            <label class="switch-row">
+              <span class="field-copy">
+                <span>音量変更で一時停止</span>
+                <span class="field-help">オンで、本体タップ等で音量を変えると一時停止(スヌーズ)して監視継続。オフは音量を戻して鳴らし続ける。</span>
+              </span>
+              <span class="switch"><input id="setting-volume-ack-enabled" type="checkbox"><span class="slider"></span></span>
+            </label>
+            <label class="range-label">
+              <span>音量変化の感度(閾値) <output id="setting-epsilon-output">0.10</output></span>
+              <input id="setting-volume-ack-epsilon" type="range" min="0.01" max="0.5" step="0.01">
+              <span class="field-help">どれだけ音量が変われば「触った」と判定するか。小さいほど敏感。例:0.05〜0.1</span>
+            </label>
+            <label>
+              <span>猶予時間(秒)</span>
+              <input id="setting-grace-sec" type="number" min="0" step="1">
+              <span class="field-help">一時停止してから起き上がる猶予。この秒数たってもまだ在床なら再び鳴る。例:120秒</span>
+            </label>
+            <label>
+              <span>最大セッション(分)</span>
+              <input id="setting-max-session-sec" type="number" min="1" step="1">
+              <span class="field-help">安全装置。どれだけ起きなくてもこの分数で強制終了。例:30分</span>
+            </label>
+          </div>
+
+          <div class="settings-group">
+            <h2>システム</h2>
+            <label>
+              <span>センサー確認間隔(秒)</span>
+              <input id="setting-poll-sec" type="number" min="1" step="1">
+              <span class="field-help">睡眠センサーを何秒ごとに確認するか。短いほど反応が速いが問い合わせが増える。例:5秒</span>
+            </label>
+            <label class="range-label">
+              <span>デフォルト音量 <output id="setting-ring-volume-output">100%</output></span>
+              <input id="setting-ring-volume" type="range" min="0" max="100" step="1">
+              <span class="field-help">アラームを鳴らすときの音量（最大100%推奨）。</span>
+            </label>
+            <label>
+              <span>デフォルトデバイス</span>
+              <input id="setting-default-devices" type="text">
+              <span class="field-help">新規アラームの対象スピーカー名（カンマ区切り）。例:ぬま</span>
+            </label>
+            <label>
+              <span>フォールバック音源URL</span>
+              <input id="setting-fallback-url" type="url" placeholder="https://...">
+              <span class="field-help">アラームに音源が無いとき使う公開音声URL。</span>
+            </label>
+          </div>
+
+          <div class="settings-group sound-manager-group">
+            <h2>音源を管理</h2>
+            <div class="sound-panel sound-manager-upload-panel">
+              <label id="manager-drop-zone" class="drop-zone">
+                <input id="sound-manager-file" type="file" accept="audio/mpeg,.mp3">
+                <span>MP3をドロップ or クリックで選択</span>
+                <strong id="manager-selected-file-name">未選択</strong>
+              </label>
+              <div id="manager-audio-editor" class="audio-editor hidden">
+                <div id="manager-waveform-wrap" class="waveform-wrap">
+                  <canvas id="manager-waveform-canvas" width="600" height="80"></canvas>
+                  <div id="manager-waveform-window" class="waveform-window" aria-label="トリミング範囲">
+                    <div id="manager-trim-dim-left" class="trim-dim trim-dim-left"></div>
+                    <div id="manager-trim-selection" class="trim-selection">
+                      <span id="manager-trim-start-handle" class="trim-window-handle trim-window-handle-start" role="slider" aria-label="開始位置" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="0"></span>
+                      <span class="trim-selection-grip" aria-hidden="true"></span>
+                      <span id="manager-trim-end-handle" class="trim-window-handle trim-window-handle-end" role="slider" aria-label="終了位置" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="1000"></span>
+                    </div>
+                    <div id="manager-trim-dim-right" class="trim-dim trim-dim-right"></div>
+                  </div>
+                </div>
+                <div class="trim-controls">
+                  <div class="trim-time-row">
+                    <span>開始: <span id="manager-trim-start-label">0:00.0</span></span>
+                    <span>長さ: <span id="manager-trim-length-label">0:00.0</span></span>
+                    <span>終了: <span id="manager-trim-end-label">0:00.0</span></span>
+                  </div>
+                </div>
+                <div class="editor-actions">
+                  <button id="manager-preview-btn" type="button" class="btn-secondary">▶ プレビュー</button>
+                  <div class="upload-name-row">
+                    <input id="manager-upload-filename" type="text" placeholder="ファイル名.wav" class="upload-filename-input">
+                    <button id="manager-do-upload-btn" type="button" class="btn-accent">アップロード</button>
+                  </div>
+                </div>
+                <div id="manager-upload-status" class="upload-status"></div>
+              </div>
+            </div>
+            <div id="sound-manager-list" class="sound-manager-list" aria-live="polite"></div>
+            <div id="sound-manager-message" class="sound-manager-message" aria-live="polite"></div>
+          </div>
+
+          <div class="settings-footer">
+            <span id="settings-message" class="save-flash" aria-live="polite"></span>
+            <button id="save-settings" class="button button-accent" type="submit">保存</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="alarm-grid" class="alarm-grid" aria-label="アラーム一覧" aria-live="polite"></section>
+    </main>
+
+    <button id="fab-add" class="fab-add" type="button" aria-label="アラームを追加">+</button>
+
+    <div id="modal-overlay" class="modal-overlay hidden" aria-hidden="true">
+      <div id="modal-alarm" class="modal-alarm" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <form id="alarm-form" class="alarm-form">
+          <input id="alarm-id" type="hidden">
+          <div class="modal-header">
+            <h2 id="modal-title">アラーム追加</h2>
+            <button id="close-modal" class="icon-button" type="button" aria-label="閉じる">×</button>
+          </div>
+
+          <div id="form-error" class="form-error" role="alert"></div>
+
+          <section class="form-section time-section" aria-label="時刻">
+            <label>
+              <span class="section-label">時刻</span>
+              <input id="alarm-time" class="time-input" type="time" required>
+            </label>
+          </section>
+
+          <section class="form-section" aria-label="基本設定">
+            <label>
+              <span class="section-label">ラベル</span>
+              <input id="alarm-label" type="text" maxlength="80" placeholder="Alarm">
+            </label>
+            <label class="switch-row">
+              <span>起床確認</span>
+              <span class="switch"><input id="alarm-wake-check" type="checkbox"><span class="slider"></span></span>
+            </label>
+            <label class="switch-row">
+              <span>有効</span>
+              <span class="switch"><input id="alarm-enabled" type="checkbox"><span class="slider"></span></span>
+            </label>
+          </section>
+
+          <section class="form-section" aria-label="繰り返し">
+            <div class="section-label">繰り返し</div>
+            <div class="preset-row">
+              <button class="chip preset" data-days="0,1,2,3,4,5,6" type="button">毎日</button>
+              <button class="chip preset" data-days="0,1,2,3,4" type="button">平日</button>
+              <button class="chip preset" data-days="5,6" type="button">週末</button>
+              <button class="chip preset" data-days="" type="button">1回</button>
+            </div>
+            <div id="weekday-chips" class="weekday-row"></div>
+          </section>
+
+          <section class="form-section" aria-label="音源">
+            <div class="section-label">音源</div>
+            <div id="sound-tabs" class="segment-control tab-existing" role="tablist" aria-label="音源タイプ">
+              <button class="tab active" data-sound-tab="existing" type="button" role="tab" aria-selected="true">既存</button>
+              <button class="tab" data-sound-tab="upload" type="button" role="tab" aria-selected="false">アップロード</button>
+              <button class="tab" data-sound-tab="url" type="button" role="tab" aria-selected="false">URL</button>
+            </div>
+            <div id="sound-existing" class="sound-panel">
+              <select id="alarm-sound-select"></select>
+            </div>
+            <div id="sound-upload" class="sound-panel hidden">
+              <label id="drop-zone" class="drop-zone">
+                <input id="alarm-sound-file" type="file" accept="audio/mpeg,.mp3">
+                <span>MP3をドロップ or クリックで選択</span>
+                <strong id="selected-file-name">未選択</strong>
+              </label>
+              <div id="audio-editor" class="audio-editor hidden">
+                <div id="waveform-wrap" class="waveform-wrap">
+                  <canvas id="waveform-canvas" width="600" height="80"></canvas>
+                  <div id="waveform-window" class="waveform-window" aria-label="トリミング範囲">
+                    <div id="trim-dim-left" class="trim-dim trim-dim-left"></div>
+                    <div id="trim-selection" class="trim-selection">
+                      <span id="trim-start-handle" class="trim-window-handle trim-window-handle-start" role="slider" aria-label="開始位置" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="0"></span>
+                      <span class="trim-selection-grip" aria-hidden="true"></span>
+                      <span id="trim-end-handle" class="trim-window-handle trim-window-handle-end" role="slider" aria-label="終了位置" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="1000"></span>
+                    </div>
+                    <div id="trim-dim-right" class="trim-dim trim-dim-right"></div>
+                  </div>
+                </div>
+                <div class="trim-controls">
+                  <div class="trim-time-row">
+                    <span>開始: <span id="trim-start-label">0:00.0</span></span>
+                    <span>長さ: <span id="trim-length-label">0:00.0</span></span>
+                    <span>終了: <span id="trim-end-label">0:00.0</span></span>
+                  </div>
+                </div>
+                <div class="editor-actions">
+                  <button id="preview-btn" type="button" class="btn-secondary">▶ プレビュー</button>
+                  <div class="upload-name-row">
+                    <input id="upload-filename" type="text" placeholder="ファイル名.wav" class="upload-filename-input">
+                    <button id="do-upload-btn" type="button" class="btn-accent">アップロード</button>
+                  </div>
+                </div>
+                <div id="upload-status" class="upload-status"></div>
+              </div>
+            </div>
+            <div id="sound-url" class="sound-panel hidden">
+              <input id="alarm-sound-url" type="url" placeholder="https://.../alarm.mp3">
+            </div>
+          </section>
+
+          <section class="form-section" aria-label="音量">
+            <label class="range-label volume-wrap">
+              <span class="section-label">音量</span>
+              <span id="alarm-volume-output" class="range-bubble">100%</span>
+              <input id="alarm-volume" type="range" min="0" max="100" step="1">
+            </label>
+          </section>
+
+          <section class="form-section" aria-label="デバイス">
+            <div class="section-label">デバイス</div>
+            <div id="alarm-devices" class="device-grid"></div>
+          </section>
+
+          <div class="modal-actions">
+            <button id="delete-alarm" class="button button-danger hidden" type="button">削除</button>
+            <div class="modal-action-right">
+              <button id="cancel-modal" class="button button-ghost" type="button">キャンセル</button>
+              <button id="save-alarm" class="button button-accent" type="submit">保存</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </body>
+</html>

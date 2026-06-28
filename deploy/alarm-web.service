@@ -1,0 +1,16 @@
+[Unit]
+Description=Alarm Web App
+After=network.target emfit-qs2.service
+Wants=emfit-qs2.service
+
+[Service]
+Type=simple
+User=minipc
+WorkingDirectory=/home/minipc/chromecast/alarmapp
+Environment=PATH=/home/minipc/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/minipc/.local/bin/uvicorn app:app --host 0.0.0.0 --port 8123
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

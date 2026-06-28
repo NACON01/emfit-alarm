@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+alarmapp/alarm.db
+deploy/*.env
+!deploy/*.env.example
+
+sounds/*
+!sounds/alarm_long.mp3
+
+.DS_Store
