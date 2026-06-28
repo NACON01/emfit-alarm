@@ -70,6 +70,7 @@ class RingSession:
         self._task: asyncio.Task[Any] | None = None
         self._caster = caster.CastSession(device_name)
         self._volume_ack_ticks = 0
+        self._media_stop_ticks = 0
         self._settle_tick = False
         self._seen_playing = False
 
@@ -78,6 +79,7 @@ class RingSession:
         # hammer the slow sensor endpoint.
         self.tick_sec = max(0.01, _as_float(self.settings.get("tick_sec"), 1.0))
         self.volume_ack_ticks_required = max(1, int(_as_float(self.settings.get("volume_ack_ticks_required"), 2)))
+        self.media_stop_ticks_required = max(1, int(_as_float(self.settings.get("media_stop_ticks_required"), 2)))
         self.poll_sec = max(0.01, _as_float(self.settings.get("poll_sec"), 5.0))
         self.ring_volume = max(0.0, min(1.0, _as_float(self.settings.get("ring_volume"), 1.0)))
         self.volume_ack_epsilon = max(0.0, _as_float(self.settings.get("volume_ack_epsilon"), 0.05))
@@ -166,24 +168,29 @@ class RingSession:
         # FINISHED idle_reason right after _recast() ends the session early.
         if state_str in {"PLAYING", "BUFFERING"}:
             self._seen_playing = True
+            self._media_stop_ticks = 0
         if not self._seen_playing:
             return
 
         if reason == "FINISHED":
+            self._media_stop_ticks = 0
             if self.wake_check:
                 self._recast()
             else:
                 self._end("finished")
             return
-        if reason in {"CANCELLED", "INTERRUPTED"} or (
+        if reason in {"CANCELLED", "INTERRUPTED", "STOPPED"} or (
             state_str == "IDLE" and reason not in {"", "FINISHED"}
         ):
-            if self.wake_check:
-                self._caster.stop()
-                self._enter_ack_grace()
-            else:
-                self._end("ack")
+            self._ack_from_media_stop()
             return
+
+        if state_str in {"IDLE", "PAUSED", "STOPPED"}:
+            self._media_stop_ticks += 1
+            if self._media_stop_ticks >= self.media_stop_ticks_required:
+                self._ack_from_media_stop()
+            return
+        self._media_stop_ticks = 0
 
         if self._settle_tick:
             self._settle_tick = False
@@ -211,6 +218,13 @@ class RingSession:
                 self._volume_ack_ticks = 0
         elif diff > self.volume_ack_epsilon:
             self._set_target_volume()
+
+    def _ack_from_media_stop(self) -> None:
+        if self.wake_check:
+            self._caster.stop()
+            self._enter_ack_grace()
+        else:
+            self._end("ack")
 
     async def _tick_ack_grace(self) -> None:
         in_bed = None
@@ -255,6 +269,7 @@ class RingSession:
         self.continuous_out_sec = 0.0
         self._continuous_none_sec = 0.0
         self._volume_ack_ticks = 0
+        self._media_stop_ticks = 0
         self._recast()
 
     def _enter_ack_grace(self) -> None:
@@ -264,6 +279,7 @@ class RingSession:
         self.continuous_out_sec = 0.0
         self._continuous_none_sec = 0.0
         self._volume_ack_ticks = 0
+        self._media_stop_ticks = 0
 
     def _enter_out(self) -> None:
         self.state = "OUT"
@@ -272,6 +288,7 @@ class RingSession:
         self.continuous_out_sec = 0.0
         self._continuous_none_sec = 0.0
         self._volume_ack_ticks = 0
+        self._media_stop_ticks = 0
 
     def _set_target_volume(self) -> None:
         self._caster.set_volume(self.ring_volume)

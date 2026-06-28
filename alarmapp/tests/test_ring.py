@@ -226,7 +226,7 @@ async def test_finished_audio_is_recast():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["CANCELLED", "INTERRUPTED"])
+@pytest.mark.parametrize("reason", ["CANCELLED", "INTERRUPTED", "STOPPED"])
 async def test_cancelled_or_interrupted_enters_ack_grace(reason):
     FakeCastSession.default_idle_reason = reason
     alarm = session()
@@ -234,6 +234,37 @@ async def test_cancelled_or_interrupted_enters_ack_grace(reason):
     await alarm._tick()
 
     assert alarm.state == "ACK_GRACE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["IDLE", "PAUSED"])
+async def test_hardware_media_stop_without_reason_enters_ack_grace_after_two_ticks(state):
+    alarm = session(media_stop_ticks_required=2)
+    cast = FakeCastSession.instances[-1]
+
+    await alarm._tick()
+    cast.state = state
+    cast.reason = ""
+
+    await alarm._tick()
+    assert alarm.state == "RINGING"
+
+    await alarm._tick()
+    assert alarm.state == "ACK_GRACE"
+
+
+@pytest.mark.asyncio
+async def test_hardware_media_stop_without_wake_check_ends_ack():
+    alarm = session(wake_check=False, media_stop_ticks_required=2)
+    cast = FakeCastSession.instances[-1]
+
+    await alarm._tick()
+    cast.state = "IDLE"
+    cast.reason = ""
+    await alarm._tick()
+    await alarm._tick()
+
+    assert alarm.ended_reason == "ack"
 
 
 @pytest.mark.asyncio
