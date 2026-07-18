@@ -5,9 +5,15 @@ import json
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 
 import caster
 import emfit
@@ -21,10 +27,21 @@ ROOT_DIR = BASE_DIR.parent
 STATIC_DIR = BASE_DIR / "static"
 SOUNDS_DIR = ROOT_DIR / "sounds"
 UNSAFE_SOUND_CHARS_RE = re.compile(r"[\x00-\x1f\x7f/\\]+")
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".flac")
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+DOWNLOAD_PERCENT_RE = re.compile(r"\[download\]\s+(?P<percent>\d+(?:\.\d+)?)%")
+DOWNLOAD_TOTAL_RE = re.compile(r"\bof\s+~?\s*(?P<total>[^\s]+)")
+DOWNLOAD_SPEED_RE = re.compile(r"\bat\s+(?P<speed>[^\s]+/s)")
+DOWNLOAD_ETA_RE = re.compile(r"\bETA\s+(?P<eta>[^\s]+)")
+DOWNLOAD_FRAGMENT_RE = re.compile(r"\((?P<fragment>frag\s+[^)]+)\)")
+YOUTUBE_JOBS: dict[str, dict[str, Any]] = {}
+YOUTUBE_JOBS_LOCK = threading.Lock()
+YOUTUBE_JOB_TTL_SEC = 3600
 
 
 try:
-    from fastapi import FastAPI, File, HTTPException, UploadFile
+    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
@@ -68,6 +85,7 @@ def public_alarm(alarm: dict[str, Any]) -> dict[str, Any]:
         "wake_check": bool(alarm.get("wake_check")),
         "repeat_days": _json_list(alarm.get("repeat_days"), []),
         "devices": _json_list(alarm.get("devices"), ["ぬま"]),
+        "sound_refs": _sound_refs_for_alarm(alarm),
     }
 
 
@@ -85,6 +103,10 @@ def list_sound_files() -> list[dict[str, Any]]:
             }
         )
     return sounds
+
+
+def _sound_info(path: Path) -> dict[str, Any]:
+    return {"name": path.name, "size": path.stat().st_size, "url": sound_file_url(path.name)}
 
 
 def sound_file_url(name: str) -> str:
@@ -107,6 +129,48 @@ def _sound_path(name: str) -> Path:
     return path
 
 
+def _unique_sound_path(name: str) -> Path:
+    candidate = _sound_path(name)
+    if candidate.suffix == "":
+        candidate = candidate.with_suffix(".mp3")
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix
+    for index in range(2, 1000):
+        next_candidate = _sound_path(f"{stem}-{index}{suffix}")
+        if not next_candidate.exists():
+            return next_candidate
+    raise FileExistsError("could not find a unique sound filename")
+
+
+def _sound_refs_for_alarm(alarm: dict[str, Any]) -> list[str]:
+    sound_ref = alarm.get("sound_ref") or ""
+    if alarm.get("sound_type") == "random":
+        return [str(item) for item in _json_list(sound_ref, []) if str(item)]
+    if alarm.get("sound_type") == "upload" and sound_ref:
+        return [str(sound_ref)]
+    return []
+
+
+def _fallback_sound_name(excluded_name: str | None = None) -> str:
+    for sound in list_sound_files():
+        if sound["name"] != excluded_name:
+            return str(sound["name"])
+    return "alarm_long.mp3"
+
+
+def _repoint_sound_refs(old_name: str, new_name: str) -> None:
+    for alarm in get_all_alarms():
+        if alarm.get("sound_type") == "upload" and alarm.get("sound_ref") == old_name:
+            update_alarm(int(alarm["id"]), sound_ref=new_name)
+        elif alarm.get("sound_type") == "random":
+            refs = _sound_refs_for_alarm(alarm)
+            next_refs = [new_name if ref == old_name else ref for ref in refs]
+            if next_refs != refs:
+                update_alarm(int(alarm["id"]), sound_ref=next_refs)
+
+
 def rename_sound(old_name: str, new_name: str) -> dict[str, Any]:
     """Rename a sound file (keeping its original extension) and repoint any
     alarms that referenced it. Returns the new sound's info."""
@@ -124,11 +188,267 @@ def rename_sound(old_name: str, new_name: str) -> dict[str, Any]:
     if dst != src and dst.exists():
         raise FileExistsError("a sound with that name already exists")
     src.rename(dst)
-    # Repoint alarms that used the old upload by name.
+    _repoint_sound_refs(src.name, dst.name)
+    return _sound_info(dst)
+
+
+def replace_sound(old_name: str, new_name: str, data: bytes) -> dict[str, Any]:
+    src = _sound_path(old_name)
+    if not src.exists():
+        raise FileNotFoundError("sound not found")
+    filename = _safe_sound_name(new_name or "")
+    if not filename.lower().endswith(AUDIO_EXTENSIONS):
+        raise ValueError("unsupported audio extension")
+    if not data:
+        raise ValueError("empty upload")
+    dst = _sound_path(filename)
+    if dst != src and dst.exists():
+        raise FileExistsError("a sound with that name already exists")
+    dst.write_bytes(data)
+    if dst != src and src.exists():
+        src.unlink()
+        _repoint_sound_refs(src.name, dst.name)
+    return _sound_info(dst)
+
+
+def delete_sound(name: str) -> bool:
+    path = _sound_path(name)
+    existed = path.exists()
+    if existed:
+        path.unlink()
+
+    replacement = _fallback_sound_name(path.name)
     for alarm in get_all_alarms():
-        if alarm.get("sound_type") == "upload" and alarm.get("sound_ref") == src.name:
-            update_alarm(int(alarm["id"]), sound_ref=dst.name)
-    return {"name": dst.name, "size": dst.stat().st_size, "url": sound_file_url(dst.name)}
+        if alarm.get("sound_type") == "upload" and alarm.get("sound_ref") == path.name:
+            update_alarm(int(alarm["id"]), sound_ref=replacement)
+        elif alarm.get("sound_type") == "random":
+            refs = [ref for ref in _sound_refs_for_alarm(alarm) if ref != path.name]
+            if len(refs) >= 2:
+                update_alarm(int(alarm["id"]), sound_ref=refs)
+            elif len(refs) == 1:
+                update_alarm(int(alarm["id"]), sound_type="upload", sound_ref=refs[0])
+            else:
+                update_alarm(int(alarm["id"]), sound_type="upload", sound_ref=replacement)
+    return existed
+
+
+def _validate_youtube_url(url: str) -> str:
+    trimmed = str(url or "").strip()
+    parsed = urlparse(trimmed)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or host not in YOUTUBE_HOSTS:
+        raise ValueError("YouTube URLを入力してください")
+    return trimmed
+
+
+def _yt_dlp_error(stderr: str, stdout: str) -> str:
+    combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part)
+    if not combined:
+        return "yt-dlp failed"
+    lines = [line.strip() for line in combined.splitlines() if line.strip()]
+    return "\n".join(lines[-4:])[:800]
+
+
+def _clean_progress_line(line: str) -> str:
+    return ANSI_RE.sub("", str(line or "")).strip()
+
+
+def _youtube_progress_from_line(line: str) -> dict[str, Any]:
+    clean = _clean_progress_line(line)
+    if not clean:
+        return {}
+
+    lower = clean.lower()
+    if "[download]" in clean:
+        updates: dict[str, Any] = {"state": "downloading", "message": clean}
+        percent_match = DOWNLOAD_PERCENT_RE.search(clean)
+        if percent_match:
+            updates["percent"] = float(percent_match.group("percent"))
+        total_match = DOWNLOAD_TOTAL_RE.search(clean)
+        if total_match:
+            updates["total"] = total_match.group("total")
+        speed_match = DOWNLOAD_SPEED_RE.search(clean)
+        if speed_match:
+            updates["speed"] = speed_match.group("speed")
+        eta_match = DOWNLOAD_ETA_RE.search(clean)
+        if eta_match:
+            updates["eta"] = eta_match.group("eta")
+        fragment_match = DOWNLOAD_FRAGMENT_RE.search(clean)
+        if fragment_match:
+            updates["fragment"] = fragment_match.group("fragment")
+        if "100%" in clean:
+            updates["percent"] = 100.0
+            updates["eta"] = None
+        return updates
+
+    if "[extractaudio]" in lower or "destination:" in lower and "extractaudio" in lower:
+        return {"state": "processing", "message": clean, "percent": 100.0, "eta": None}
+    if lower.startswith("deleting original file") or lower.startswith("[metadata]"):
+        return {"state": "processing", "message": clean, "percent": 100.0, "eta": None}
+    if clean.startswith("["):
+        return {"message": clean}
+    return {"message": clean}
+
+
+def _youtube_job_payload(job: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in job.items() if key != "thread"}
+
+
+def _purge_old_youtube_jobs() -> None:
+    cutoff = time.time() - YOUTUBE_JOB_TTL_SEC
+    with YOUTUBE_JOBS_LOCK:
+        for job_id, job in list(YOUTUBE_JOBS.items()):
+            if float(job.get("updated_ts", 0)) < cutoff and job.get("state") in {"done", "error"}:
+                YOUTUBE_JOBS.pop(job_id, None)
+
+
+def _set_youtube_job(job_id: str, **updates: Any) -> dict[str, Any] | None:
+    with YOUTUBE_JOBS_LOCK:
+        job = YOUTUBE_JOBS.get(job_id)
+        if job is None:
+            return None
+        job.update(updates)
+        job["updated_ts"] = time.time()
+        job["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(job["updated_ts"]))
+        return _youtube_job_payload(job.copy())
+
+
+def get_youtube_download_job(job_id: str) -> dict[str, Any] | None:
+    with YOUTUBE_JOBS_LOCK:
+        job = YOUTUBE_JOBS.get(job_id)
+        return _youtube_job_payload(job.copy()) if job is not None else None
+
+
+def _update_youtube_job_from_line(job_id: str, line: str) -> None:
+    updates = _youtube_progress_from_line(line)
+    if updates:
+        _set_youtube_job(job_id, **updates)
+
+
+def _run_youtube_download_job(job_id: str, url: str, filename: str | None) -> None:
+    _set_youtube_job(job_id, state="downloading", message="yt-dlpを開始しています")
+    try:
+        result = download_youtube_audio(url, filename, progress_callback=lambda line: _update_youtube_job_from_line(job_id, line))
+        _set_youtube_job(
+            job_id,
+            state="done",
+            percent=100.0,
+            eta=None,
+            result=result,
+            message=f"完了: {result['name']}",
+        )
+    except FileNotFoundError as exc:
+        _set_youtube_job(job_id, state="error", error=str(exc), message=str(exc))
+    except (ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        _set_youtube_job(job_id, state="error", error=str(exc), message=str(exc))
+
+
+def create_youtube_download_job(url: str, filename: str | None = None) -> dict[str, Any]:
+    safe_url = _validate_youtube_url(url)
+    if shutil.which("yt-dlp") is None:
+        raise FileNotFoundError("yt-dlp is not installed")
+    _purge_old_youtube_jobs()
+    now_ts = time.time()
+    job_id = uuid.uuid4().hex
+    job = {
+        "id": job_id,
+        "state": "queued",
+        "url": safe_url,
+        "filename": filename or "",
+        "percent": None,
+        "total": "",
+        "speed": "",
+        "eta": "",
+        "fragment": "",
+        "message": "待機中",
+        "error": "",
+        "result": None,
+        "created_ts": now_ts,
+        "updated_ts": now_ts,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now_ts)),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now_ts)),
+    }
+    thread = threading.Thread(target=_run_youtube_download_job, args=(job_id, safe_url, filename), daemon=True)
+    job["thread"] = thread
+    with YOUTUBE_JOBS_LOCK:
+        YOUTUBE_JOBS[job_id] = job
+    thread.start()
+    return _youtube_job_payload(job.copy())
+
+
+def download_youtube_audio(
+    url: str,
+    filename: str | None = None,
+    progress_callback: Any | None = None,
+) -> dict[str, Any]:
+    """Download one YouTube URL as an MP3 alarm sound using yt-dlp."""
+    safe_url = _validate_youtube_url(url)
+    binary = shutil.which("yt-dlp")
+    if binary is None:
+        raise FileNotFoundError("yt-dlp is not installed")
+
+    SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="alarm-ytdlp-") as tmp:
+        temp_dir = Path(tmp)
+        output_template = str(temp_dir / "%(title).80s-%(id)s.%(ext)s")
+        cmd = [
+            binary,
+            "--no-playlist",
+            "--extract-audio",
+            "--audio-format",
+            "mp3",
+            "--audio-quality",
+            "0",
+            "--newline",
+            "--progress",
+            "--progress-delta",
+            "0.5",
+            "--no-color",
+            "--restrict-filenames",
+            "--no-mtime",
+            "-o",
+            output_template,
+            safe_url,
+        ]
+        output_lines: list[str] = []
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                output_lines.append(line)
+                if progress_callback is not None:
+                    progress_callback(line)
+            returncode = process.wait(timeout=600)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            raise
+        if returncode != 0:
+            raise RuntimeError(_yt_dlp_error("", "".join(output_lines)))
+
+        candidates = [path for path in temp_dir.iterdir() if path.is_file() and path.suffix.lower() == ".mp3"]
+        if not candidates:
+            candidates = [path for path in temp_dir.iterdir() if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS]
+        if not candidates:
+            raise RuntimeError("downloaded audio file was not found")
+
+        source = max(candidates, key=lambda item: item.stat().st_mtime)
+        if filename:
+            base = _safe_sound_name(filename)
+            if not base.lower().endswith(".mp3"):
+                base = f"{Path(base).stem}.mp3"
+        else:
+            base = _safe_sound_name(source.name)
+            if not base.lower().endswith(".mp3"):
+                base = f"{Path(base).stem}.mp3"
+        destination = _unique_sound_path(base)
+        shutil.move(str(source), destination)
+        return _sound_info(destination)
 
 
 TEST_RING_SECONDS = 20
@@ -193,7 +513,7 @@ if FASTAPI_AVAILABLE:
         repeat_days: list[int] = Field(default_factory=list)
         enabled: bool = True
         sound_type: str = "upload"
-        sound_ref: str = "alarm_long.mp3"
+        sound_ref: str | list[str] = "alarm_long.mp3"
         volume: float = 1.0
         devices: list[str] = Field(default_factory=lambda: ["ぬま"])
         wake_check: bool = True
@@ -205,11 +525,16 @@ if FASTAPI_AVAILABLE:
         repeat_days: list[int] | None = None
         enabled: bool | None = None
         sound_type: str | None = None
-        sound_ref: str | None = None
+        sound_ref: str | list[str] | None = None
         volume: float | None = None
         devices: list[str] | None = None
         wake_check: bool | None = None
         last_fired_date: str | None = None
+
+
+    class YouTubeDownload(BaseModel):
+        url: str
+        filename: str | None = None
 
 
     app = FastAPI(title="Wake Alarm", version="1.0.0")
@@ -284,7 +609,7 @@ if FASTAPI_AVAILABLE:
             filename = _safe_sound_name(file.filename or "")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not filename.lower().endswith((".mp3", ".wav", ".m4a", ".aac", ".ogg")):
+        if not filename.lower().endswith(AUDIO_EXTENSIONS):
             raise HTTPException(status_code=400, detail="unsupported audio extension")
         data = await file.read()
         if not data:
@@ -294,18 +619,59 @@ if FASTAPI_AVAILABLE:
         SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
         path = _sound_path(filename)
         path.write_bytes(data)
-        return {"name": path.name, "size": path.stat().st_size, "url": sound_file_url(path.name)}
+        return _sound_info(path)
+
+
+    @app.post("/api/sounds/youtube")
+    async def api_download_youtube_sound(payload: YouTubeDownload) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(download_youtube_audio, payload.url, payload.filename)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except (ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+    @app.post("/api/sounds/youtube/jobs")
+    async def api_create_youtube_download_job(payload: YouTubeDownload) -> dict[str, Any]:
+        try:
+            return create_youtube_download_job(payload.url, payload.filename)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+    @app.get("/api/sounds/youtube/jobs/{job_id}")
+    async def api_get_youtube_download_job(job_id: str) -> dict[str, Any]:
+        job = get_youtube_download_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="download job not found")
+        return job
+
+
+    @app.post("/api/sounds/{name}/trim")
+    async def api_trim_sound(
+        name: str,
+        file: UploadFile = File(...),
+        final_name: str = Form(""),
+    ) -> dict[str, Any]:
+        data = await file.read()
+        try:
+            return replace_sound(name, final_name or file.filename or "", data)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (FileExistsError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
     @app.delete("/api/sounds/{name}")
     async def api_delete_sound(name: str) -> dict[str, bool]:
         try:
-            path = _sound_path(name)
+            deleted = delete_sound(name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if path.exists():
-            path.unlink()
-        return {"ok": True}
+        return {"ok": deleted}
 
 
     @app.post("/api/sounds/{name}/rename")
@@ -429,6 +795,37 @@ else:
                     await self._json(send, list_sound_files())
                 elif path == "/api/sounds" and method == "POST":
                     await self._json(send, {"detail": "sound upload requires python-multipart/FastAPI"}, status=503)
+                elif path == "/api/sounds/youtube/jobs" and method == "POST":
+                    payload = self._json_body(body)
+                    try:
+                        job = create_youtube_download_job(str(payload.get("url", "")), payload.get("filename"))
+                        await self._json(send, job)
+                    except FileNotFoundError as exc:
+                        await self._json(send, {"detail": str(exc)}, status=503)
+                    except ValueError as exc:
+                        await self._json(send, {"detail": str(exc)}, status=400)
+                elif path.startswith("/api/sounds/youtube/jobs/") and method == "GET":
+                    job_id = path.removeprefix("/api/sounds/youtube/jobs/")
+                    job = get_youtube_download_job(job_id)
+                    if job is None:
+                        await self._json(send, {"detail": "download job not found"}, status=404)
+                    else:
+                        await self._json(send, job)
+                elif path.startswith("/api/sounds/") and path.endswith("/trim") and method == "POST":
+                    await self._json(send, {"detail": "sound trimming requires python-multipart/FastAPI"}, status=503)
+                elif path == "/api/sounds/youtube" and method == "POST":
+                    payload = self._json_body(body)
+                    try:
+                        sound = await asyncio.to_thread(
+                            download_youtube_audio,
+                            str(payload.get("url", "")),
+                            payload.get("filename"),
+                        )
+                        await self._json(send, sound)
+                    except FileNotFoundError as exc:
+                        await self._json(send, {"detail": str(exc)}, status=503)
+                    except (ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                        await self._json(send, {"detail": str(exc)}, status=400)
                 elif path.startswith("/api/sounds/") and path.endswith("/rename") and method == "POST":
                     name = path.removeprefix("/api/sounds/").removesuffix("/rename")
                     new_name = str(self._json_body(body).get("new_name", "")).strip()
@@ -437,10 +834,8 @@ else:
                     else:
                         await self._json(send, rename_sound(name, new_name))
                 elif path.startswith("/api/sounds/") and method == "DELETE":
-                    target = _sound_path(path.removeprefix("/api/sounds/"))
-                    if target.exists():
-                        target.unlink()
-                    await self._json(send, {"ok": True})
+                    deleted = delete_sound(path.removeprefix("/api/sounds/"))
+                    await self._json(send, {"ok": deleted})
                 elif path == "/api/devices" and method == "GET":
                     devices = await asyncio.to_thread(caster.discover_devices, 5)
                     await self._json(send, {"devices": devices, "names": [d["name"] for d in devices if d.get("name")]})

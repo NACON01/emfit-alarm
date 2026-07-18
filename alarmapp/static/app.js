@@ -54,7 +54,16 @@
     managerUploadFilename: $("manager-upload-filename"),
     managerDoUploadBtn: $("manager-do-upload-btn"),
     managerUploadStatus: $("manager-upload-status"),
+    managerYoutubeUrl: $("manager-youtube-url"),
+    managerYoutubeFilename: $("manager-youtube-filename"),
+    managerDownloadYoutubeBtn: $("manager-download-youtube-btn"),
+    managerYoutubeStatus: $("manager-youtube-status"),
     soundManagerList: $("sound-manager-list"),
+    managerSoundPreviewPanel: $("manager-sound-preview-panel"),
+    managerSoundPreviewTitle: $("manager-sound-preview-title"),
+    managerSoundPreviewCurrent: $("manager-sound-preview-current"),
+    managerSoundPreviewSeek: $("manager-sound-preview-seek"),
+    managerSoundPreviewDuration: $("manager-sound-preview-duration"),
     soundManagerMessage: $("sound-manager-message"),
     alarmGrid: $("alarm-grid"),
     fabAdd: $("fab-add"),
@@ -73,9 +82,18 @@
     alarmWakeCheck: $("alarm-wake-check"),
     weekdayChips: $("weekday-chips"),
     soundTabs: $("sound-tabs"),
-    soundSelect: $("alarm-sound-select"),
+    soundList: $("alarm-sound-list"),
+    soundPreviewPanel: $("alarm-sound-preview-panel"),
+    soundPreviewTitle: $("alarm-sound-preview-title"),
+    soundPreviewCurrent: $("alarm-sound-preview-current"),
+    soundPreviewSeek: $("alarm-sound-preview-seek"),
+    soundPreviewDuration: $("alarm-sound-preview-duration"),
     soundFile: $("alarm-sound-file"),
     soundUrl: $("alarm-sound-url"),
+    youtubeUrl: $("alarm-youtube-url"),
+    youtubeFilename: $("alarm-youtube-filename"),
+    downloadYoutubeBtn: $("download-youtube-btn"),
+    youtubeStatus: $("alarm-youtube-status"),
     dropZone: $("drop-zone"),
     selectedFileName: $("selected-file-name"),
     audioEditor: $("audio-editor"),
@@ -125,6 +143,10 @@
   let pollTimer = null;
   let refreshTimer = null;
   let closeModalTimer = null;
+  let previewAudio = null;
+  let previewButton = null;
+  let previewName = "";
+  let previewTimer = null;
 
   async function api(path, options = {}) {
     const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -294,6 +316,47 @@
     } finally {
       setLoading(el, false);
     }
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function isComposingInput(event) {
+    const target = event.target;
+    return Boolean(
+      event.isComposing ||
+      event.keyCode === 229 ||
+      (target && target.dataset && target.dataset.composing === "true")
+    );
+  }
+
+  function trackComposition(input) {
+    if (!input) return;
+    input.dataset.composing = "false";
+    input.addEventListener("compositionstart", () => {
+      input.dataset.composing = "true";
+    });
+    input.addEventListener("compositionend", () => {
+      requestAnimationFrame(() => {
+        input.dataset.composing = "false";
+      });
+    });
+  }
+
+  function bindEnterToDownload(input, button) {
+    if (!input || !button) return;
+    trackComposition(input);
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      if (isComposingInput(event)) {
+        event.stopPropagation();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      button.click();
+    });
   }
 
   const AudioEditor = {
@@ -660,7 +723,7 @@
         await loadSounds();
         ensureSoundOption(uploadedName);
         setSoundTab("existing");
-        els.soundSelect.value = uploadedName;
+        setSelectedSounds([uploadedName]);
         this.setStatus("✓ アップロード完了", "success");
         this.reset({ keepStatus: true });
       } catch (err) {
@@ -702,6 +765,7 @@
       trimStartValue: 0,
       trimEndValue: 1000,
       restartPreviewTimer: null,
+      editingSoundName: null,
 
       secToLabel: AudioEditor.secToLabel,
       sanitizeWavName: AudioEditor.sanitizeWavName,
@@ -717,26 +781,23 @@
         refs.uploadStatus.classList.toggle("error", type === "error");
       },
 
-      async decodeFile(file) {
-        if (!file) {
-          this.reset();
-          return;
-        }
+      async decodeArrayBuffer(arrayBuffer, displayName, options = {}) {
         this.stopPreview();
         this.buffer = null;
         refs.audioEditor.classList.remove("hidden");
         this.setStatus("デコード中...", "");
         try {
           const context = this.getAudioContext();
-          const arrayBuffer = await this.readFileAsArrayBuffer(file);
           const decoded = await new Promise((resolve, reject) => {
             const result = context.decodeAudioData(arrayBuffer, resolve, reject);
             if (result && typeof result.then === "function") result.then(resolve, reject);
           });
           if (context.close) context.close();
           this.buffer = decoded;
+          this.editingSoundName = options.editingSoundName || null;
           this.setTrimValues(0, 1000);
-          refs.uploadFilename.value = this.defaultDisplayName(file.name);
+          refs.uploadFilename.value = options.outputName || this.defaultDisplayName(displayName);
+          refs.doUploadBtn.textContent = this.editingSoundName ? "トリミング保存" : "アップロード";
           this.drawWaveform();
           this.updateTrim();
           this.setStatus("", "");
@@ -746,6 +807,38 @@
           this.reset();
           refs.audioEditor.classList.remove("hidden");
           this.setStatus(`エラー: ${err.message || "デコードできませんでした"}`, "error");
+        }
+      },
+
+      async decodeFile(file) {
+        if (!file) {
+          this.reset();
+          return;
+        }
+        const arrayBuffer = await this.readFileAsArrayBuffer(file);
+        await this.decodeArrayBuffer(arrayBuffer, file.name);
+      },
+
+      async loadExistingSound(sound, button) {
+        setLoading(button, true);
+        this.reset();
+        this.setStatus("読み込み中...", "");
+        try {
+          const response = await fetch(sound.url || soundPreviewUrl(sound.name));
+          if (!response.ok) throw new Error(response.statusText || String(response.status));
+          const arrayBuffer = await response.arrayBuffer();
+          const base = safeRenameBase(sound.name);
+          const outputName = sound.name.toLowerCase().endsWith(".wav") ? sound.name : `${base}.wav`;
+          await this.decodeArrayBuffer(arrayBuffer, sound.name, {
+            editingSoundName: sound.name,
+            outputName,
+          });
+          refs.audioEditor.scrollIntoView({ behavior: "smooth", block: "center" });
+        } catch (err) {
+          this.reset();
+          this.setStatus(`エラー: ${err.message || "読み込めませんでした"}`, "error");
+        } finally {
+          setLoading(button, false);
         }
       },
 
@@ -963,6 +1056,7 @@
           return;
         }
         const originalText = refs.doUploadBtn.textContent;
+        let saved = false;
         const finalName = this.sanitizeWavName(refs.uploadFilename.value);
         refs.uploadFilename.value = finalName;
         setLoading(refs.doUploadBtn, true);
@@ -973,7 +1067,16 @@
           const wavBlob = this.encodeWav(this.buffer, startSec, endSec);
           const formData = new FormData();
           formData.append("file", wavBlob, finalName);
-          const response = await fetch("/api/sounds", { method: "POST", body: formData });
+          let response;
+          if (this.editingSoundName) {
+            formData.append("final_name", finalName);
+            response = await fetch(`/api/sounds/${encodeURIComponent(this.editingSoundName)}/trim`, {
+              method: "POST",
+              body: formData,
+            });
+          } else {
+            response = await fetch("/api/sounds", { method: "POST", body: formData });
+          }
           if (!response.ok) {
             let detail = response.statusText || String(response.status);
             try {
@@ -988,13 +1091,15 @@
           const uploadedName = uploaded && uploaded.name ? uploaded.name : finalName;
           await loadSounds();
           ensureSoundOption(uploadedName);
-          els.soundSelect.value = uploadedName;
-          this.setStatus("✓ アップロード完了", "success");
+          setSelectedSounds([uploadedName]);
+          await loadAlarms();
+          this.setStatus(this.editingSoundName ? "✓ トリミング保存完了" : "✓ アップロード完了", "success");
+          saved = true;
           this.reset({ keepStatus: true });
         } catch (err) {
           this.setStatus(`エラー: ${err.message || "アップロードできませんでした"}`, "error");
         } finally {
-          refs.doUploadBtn.textContent = originalText;
+          if (!saved) refs.doUploadBtn.textContent = originalText;
           setLoading(refs.doUploadBtn, false);
         }
       },
@@ -1008,6 +1113,8 @@
         refs.fileInput.value = "";
         refs.selectedFileName.textContent = "未選択";
         refs.uploadFilename.value = "";
+        this.editingSoundName = null;
+        refs.doUploadBtn.textContent = "アップロード";
         refs.audioEditor.classList.add("hidden");
         refs.trimStartLabel.textContent = "0:00.0";
         refs.trimEndLabel.textContent = "0:00.0";
@@ -1126,12 +1233,210 @@
     renderAlarmList();
   }
 
+  function normalizeSoundRefs(value) {
+    if (Array.isArray(value)) return value.map(String).filter(Boolean);
+    if (typeof value !== "string" || !value.trim()) return [];
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+    } catch (_err) {
+      /* plain single filename */
+    }
+    return [value];
+  }
+
+  function soundRefsForAlarm(alarm) {
+    if (!alarm) return [];
+    if (Array.isArray(alarm.sound_refs)) return alarm.sound_refs.map(String).filter(Boolean);
+    if (alarm.sound_type === "random") return normalizeSoundRefs(alarm.sound_ref);
+    if (alarm.sound_type === "upload" && alarm.sound_ref) return [String(alarm.sound_ref)];
+    return [];
+  }
+
+  function selectedSoundValues() {
+    if (!els.soundList) return [];
+    return Array.from(els.soundList.querySelectorAll("input[type='checkbox']:checked"))
+      .map((input) => input.value)
+      .filter(Boolean);
+  }
+
+  function soundPreviewUrl(name) {
+    return `/sounds/${encodeURIComponent(name)}`;
+  }
+
+  function formatAudioTime(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.floor(value / 60);
+    const secs = Math.floor(value % 60);
+    return `${minutes}:${String(secs).padStart(2, "0")}`;
+  }
+
+  function alarmPreviewPanelRefs() {
+    return {
+      panel: els.soundPreviewPanel,
+      title: els.soundPreviewTitle,
+      current: els.soundPreviewCurrent,
+      seek: els.soundPreviewSeek,
+      duration: els.soundPreviewDuration,
+    };
+  }
+
+  function managerPreviewPanelRefs() {
+    return {
+      panel: els.managerSoundPreviewPanel,
+      title: els.managerSoundPreviewTitle,
+      current: els.managerSoundPreviewCurrent,
+      seek: els.managerSoundPreviewSeek,
+      duration: els.managerSoundPreviewDuration,
+    };
+  }
+
+  function bindPreviewPanel(panelRefs) {
+    if (!panelRefs || !panelRefs.seek || panelRefs.seek.dataset.bound === "true") return;
+    panelRefs.seek.dataset.bound = "true";
+    ["click", "pointerdown", "mousedown", "touchstart"].forEach((name) => {
+      panelRefs.seek.addEventListener(name, (event) => event.stopPropagation());
+    });
+    panelRefs.seek.addEventListener("input", () => {
+      if (!previewAudio || !previewButton) return;
+      const refs = previewButton._previewRefs;
+      if (!refs || refs.seek !== panelRefs.seek) return;
+      const next = Number(panelRefs.seek.value) / 1000;
+      if (Number.isFinite(next)) previewAudio.currentTime = next;
+      updatePreviewSeek();
+    });
+  }
+
+  function updatePreviewSeek() {
+    if (!previewAudio || !previewButton) return;
+    const refs = previewButton._previewRefs;
+    if (!refs) return;
+    const duration = Number(previewAudio.duration) || 0;
+    const current = Number(previewAudio.currentTime) || 0;
+    refs.current.textContent = formatAudioTime(current);
+    refs.duration.textContent = duration ? formatAudioTime(duration) : "--:--";
+    refs.seek.max = duration ? String(Math.round(duration * 1000)) : "1000";
+    refs.seek.value = duration ? String(Math.round(current * 1000)) : "0";
+  }
+
+  function resetPreviewButton() {
+    if (!previewButton) return;
+    const refs = previewButton._previewRefs;
+    previewButton.textContent = "▶";
+    previewButton.classList.remove("is-playing");
+    previewButton.setAttribute("aria-label", `${previewName || "音源"} をプレビュー`);
+    if (refs) {
+      refs.panel.classList.add("hidden");
+      refs.title.textContent = "プレビュー";
+      refs.seek.value = "0";
+      refs.current.textContent = "0:00";
+      refs.duration.textContent = "--:--";
+    }
+    previewButton = null;
+    previewName = "";
+  }
+
+  function stopSoundPreview() {
+    if (previewAudio) {
+      previewAudio.pause();
+      previewAudio.removeAttribute("src");
+      previewAudio.load();
+      previewAudio = null;
+    }
+    if (previewTimer) {
+      clearInterval(previewTimer);
+      previewTimer = null;
+    }
+    resetPreviewButton();
+  }
+
+  function createSoundPreviewControls(sound, options = {}) {
+    const button = document.createElement("button");
+    button.className = "sound-preview-button";
+    button.type = "button";
+    button.textContent = "▶";
+    button.title = "プレビュー";
+    button.setAttribute("aria-label", `${sound.name} をプレビュー`);
+
+    const panel = options.panelRefs || alarmPreviewPanelRefs();
+    bindPreviewPanel(panel);
+    const refs = { button, ...panel, onError: options.onError };
+    button._previewRefs = refs;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSoundPreview(sound, refs);
+    });
+    return refs;
+  }
+
+  async function toggleSoundPreview(sound, refs) {
+    if (previewAudio && previewName === sound.name && previewButton === refs.button) {
+      stopSoundPreview();
+      return;
+    }
+    stopSoundPreview();
+    previewName = sound.name;
+    previewButton = refs.button;
+    refs.button.textContent = "■";
+    refs.button.classList.add("is-playing");
+    refs.button.setAttribute("aria-label", `${sound.name} のプレビューを停止`);
+    refs.title.textContent = sound.name;
+    refs.panel.classList.remove("hidden");
+    previewAudio = new Audio(soundPreviewUrl(sound.name));
+    previewAudio.addEventListener("loadedmetadata", updatePreviewSeek);
+    previewAudio.addEventListener("timeupdate", updatePreviewSeek);
+    previewAudio.addEventListener("ended", stopSoundPreview, { once: true });
+    previewAudio.addEventListener("error", () => {
+      stopSoundPreview();
+      if (refs.onError) refs.onError("プレビュー再生できませんでした。");
+      else showFormError("プレビュー再生できませんでした。");
+    }, { once: true });
+    try {
+      await previewAudio.play();
+      updatePreviewSeek();
+      previewTimer = setInterval(updatePreviewSeek, 250);
+    } catch (err) {
+      stopSoundPreview();
+      if (refs.onError) refs.onError(err.message || "プレビュー再生できませんでした。");
+      else showFormError(err.message || "プレビュー再生できませんでした。");
+    }
+  }
+
+  function renderSoundChoices(preselect) {
+    if (!els.soundList) return;
+    stopSoundPreview();
+    const selected = new Set((preselect || selectedSoundValues()).map(String));
+    els.soundList.textContent = "";
+    const sourceSounds = sounds.length ? sounds : [{ name: "alarm_long.mp3", size: 0 }];
+    sourceSounds.forEach((sound, index) => {
+      const row = document.createElement("div");
+      row.className = "sound-choice";
+      const main = document.createElement("label");
+      main.className = "sound-choice-main";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = sound.name;
+      input.checked = selected.has(sound.name) || (!selected.size && index === 0);
+      const text = document.createElement("span");
+      text.textContent = sound.name;
+      const preview = createSoundPreviewControls(sound, { panelRefs: alarmPreviewPanelRefs() });
+      main.append(input, text);
+      row.append(main, preview.button);
+      els.soundList.appendChild(row);
+    });
+  }
+
+  function setSelectedSounds(names) {
+    const selected = new Set((names || []).map(String).filter(Boolean));
+    if (!selected.size && sounds.length) selected.add(sounds[0].name);
+    renderSoundChoices(Array.from(selected));
+  }
+
   function ensureSoundOption(name) {
-    if (!name || Array.from(els.soundSelect.options).some((option) => option.value === name)) return;
-    const option = document.createElement("option");
-    option.value = name;
-    option.textContent = name;
-    els.soundSelect.appendChild(option);
+    if (!name || sounds.some((sound) => sound.name === name)) return;
+    sounds.push({ name, size: 0, url: `/sounds/${encodeURIComponent(name)}` });
+    renderSoundChoices([...selectedSoundValues(), name]);
   }
 
   function hasSound(name) {
@@ -1144,17 +1449,9 @@
   }
 
   async function loadSounds() {
+    const selected = selectedSoundValues();
     sounds = await safeApi("/api/sounds", undefined, []);
-    els.soundSelect.textContent = "";
-    sounds.forEach((sound) => {
-      const option = document.createElement("option");
-      option.value = sound.name;
-      option.textContent = sound.name;
-      els.soundSelect.appendChild(option);
-    });
-    if (!sounds.length) {
-      ensureSoundOption("alarm_long.mp3");
-    }
+    renderSoundChoices(selected);
     renderSoundManager();
   }
 
@@ -1172,8 +1469,85 @@
     els.soundManagerMessage.classList.toggle("error", type === "error");
   }
 
+  function setStatusMessage(el, message, type) {
+    if (!el) return;
+    el.textContent = message || "";
+    el.classList.toggle("success", type === "success");
+    el.classList.toggle("error", type === "error");
+  }
+
+  function formatYouTubeJobStatus(job) {
+    if (!job) return "待機中";
+    if (job.state === "queued") return "待機中";
+    if (job.state === "done") return `完了: ${job.result && job.result.name ? job.result.name : "取り込みました"}`;
+    if (job.state === "error") return job.error || job.message || "取り込めませんでした";
+    if (job.state === "processing") {
+      return job.message ? `音声変換中: ${job.message}` : "音声変換中";
+    }
+    const parts = ["DL中"];
+    if (job.percent != null) parts.push(`${Number(job.percent).toFixed(1)}%`);
+    if (job.total) parts.push(`全体 ${job.total}`);
+    if (job.speed) parts.push(job.speed);
+    if (job.eta) parts.push(`残り ${job.eta}`);
+    if (job.fragment) parts.push(job.fragment);
+    if (parts.length === 1 && job.message) parts.push(job.message);
+    return parts.join(" / ");
+  }
+
+  async function waitForYouTubeJob(job, statusEl) {
+    let current = job;
+    setStatusMessage(statusEl, formatYouTubeJobStatus(current), "");
+    while (current && !["done", "error"].includes(current.state)) {
+      await delay(700);
+      current = await api(`/api/sounds/youtube/jobs/${encodeURIComponent(current.id)}`);
+      setStatusMessage(statusEl, formatYouTubeJobStatus(current), current.state === "error" ? "error" : "");
+    }
+    if (!current || current.state !== "done" || !current.result) {
+      throw new Error((current && (current.error || current.message)) || "取り込めませんでした");
+    }
+    return current.result;
+  }
+
+  async function downloadYouTubeSound(refs, options = {}) {
+    const url = refs.urlInput.value.trim();
+    if (!url) {
+      setStatusMessage(refs.status, "YouTube URLを入力してください", "error");
+      refs.urlInput.focus();
+      return null;
+    }
+    const originalText = refs.button.textContent;
+    refs.button.textContent = "DL中...";
+    setLoading(refs.button, true);
+    setStatusMessage(refs.status, "", "");
+    try {
+      const job = await api("/api/sounds/youtube/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          url,
+          filename: refs.filenameInput ? refs.filenameInput.value.trim() : "",
+        }),
+      });
+      const downloaded = await waitForYouTubeJob(job, refs.status);
+      await loadSounds();
+      ensureSoundOption(downloaded.name);
+      setSelectedSounds([downloaded.name]);
+      if (options.switchToExisting !== false) setSoundTab("existing");
+      if (refs.filenameInput) refs.filenameInput.value = "";
+      refs.urlInput.value = "";
+      setStatusMessage(refs.status, "✓ 取り込みました", "success");
+      return downloaded;
+    } catch (err) {
+      setStatusMessage(refs.status, err.message || "取り込めませんでした", "error");
+      return null;
+    } finally {
+      refs.button.textContent = originalText;
+      setLoading(refs.button, false);
+    }
+  }
+
   function renderSoundManager() {
     if (!els.soundManagerList) return;
+    stopSoundPreview();
     els.soundManagerList.textContent = "";
     if (!sounds.length) {
       const empty = document.createElement("div");
@@ -1198,6 +1572,15 @@
 
       const actions = document.createElement("div");
       actions.className = "sound-manager-actions";
+      const preview = createSoundPreviewControls(sound, {
+        panelRefs: managerPreviewPanelRefs(),
+        onError: (message) => setSoundManagerMessage(message, "error"),
+      });
+      const trim = document.createElement("button");
+      trim.className = "button button-ghost sound-action";
+      trim.type = "button";
+      trim.textContent = "トリミング";
+      trim.addEventListener("click", () => ManagerAudioEditor.loadExistingSound(sound, trim));
       const rename = document.createElement("button");
       rename.className = "button button-ghost sound-action";
       rename.type = "button";
@@ -1208,7 +1591,7 @@
       remove.type = "button";
       remove.textContent = "削除";
       remove.addEventListener("click", () => deleteSound(sound.name));
-      actions.append(rename, remove);
+      actions.append(preview.button, trim, rename, remove);
 
       row.append(info, actions);
       els.soundManagerList.appendChild(row);
@@ -1216,6 +1599,7 @@
   }
 
   function beginRenameSound(row, sound) {
+    stopSoundPreview();
     row.classList.add("is-editing");
     row.textContent = "";
 
@@ -1281,7 +1665,7 @@
       });
       await loadSounds();
       await loadAlarms();
-      if (renamed && renamed.name) els.soundSelect.value = renamed.name;
+      if (renamed && renamed.name) setSelectedSounds([renamed.name]);
       setSoundManagerMessage("名前を変更しました", "success");
     } catch (err) {
       setSoundManagerMessage(err.message || "名前を変更できませんでした", "error");
@@ -1293,6 +1677,7 @@
 
   async function deleteSound(name) {
     if (!window.confirm(`${name} を削除しますか？`)) return;
+    stopSoundPreview();
     setSoundManagerMessage("", "");
     try {
       await api(`/api/sounds/${encodeURIComponent(name)}`, { method: "DELETE" });
@@ -1307,8 +1692,23 @@
 
   async function repointAlarmsAfterSoundDelete(deletedName) {
     const replacement = fallbackSoundName(deletedName);
-    const targets = alarms.filter((alarm) => alarm.sound_type === "upload" && alarm.sound_ref === deletedName);
+    const targets = alarms.filter((alarm) => {
+      if (alarm.sound_type === "upload") return alarm.sound_ref === deletedName;
+      if (alarm.sound_type === "random") return soundRefsForAlarm(alarm).includes(deletedName);
+      return false;
+    });
     for (const alarm of targets) {
+      let sound_type = "upload";
+      let sound_ref = replacement;
+      if (alarm.sound_type === "random") {
+        const refs = soundRefsForAlarm(alarm).filter((name) => name !== deletedName);
+        if (refs.length >= 2) {
+          sound_type = "random";
+          sound_ref = JSON.stringify(refs);
+        } else if (refs.length === 1) {
+          sound_ref = refs[0];
+        }
+      }
       await api(`/api/alarms/${alarm.id}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -1319,8 +1719,8 @@
           wake_check: Boolean(alarm.wake_check),
           volume: Number(alarm.volume) || 1,
           devices: Array.isArray(alarm.devices) && alarm.devices.length ? alarm.devices : ["ぬま"],
-          sound_type: "upload",
-          sound_ref: replacement,
+          sound_type,
+          sound_ref,
         }),
       });
     }
@@ -1396,14 +1796,14 @@
 
   function setSoundTab(tabName) {
     activeSoundTab = tabName;
-    els.soundTabs.classList.remove("tab-existing", "tab-upload", "tab-url");
+    els.soundTabs.classList.remove("tab-existing", "tab-upload", "tab-youtube", "tab-url");
     els.soundTabs.classList.add(`tab-${tabName}`);
     document.querySelectorAll(".tab[data-sound-tab]").forEach((tab) => {
       const active = tab.dataset.soundTab === tabName;
       tab.classList.toggle("active", active);
       tab.setAttribute("aria-selected", active ? "true" : "false");
     });
-    ["existing", "upload", "url"].forEach((name) => {
+    ["existing", "upload", "youtube", "url"].forEach((name) => {
       const panel = $(`sound-${name}`);
       if (panel) panel.classList.toggle("hidden", name !== tabName);
     });
@@ -1438,13 +1838,18 @@
     els.volume.value = Math.round((editing ? Number(alarm.volume) || 1 : 1) * 100);
     updateVolumeOutput();
     els.soundUrl.value = editing && alarm.sound_type === "url" ? alarm.sound_ref || "" : "";
+    if (els.youtubeUrl) els.youtubeUrl.value = "";
+    if (els.youtubeFilename) els.youtubeFilename.value = "";
+    setStatusMessage(els.youtubeStatus, "", "");
     AudioEditor.reset();
 
-    if (editing && alarm.sound_ref && alarm.sound_type !== "url" && hasSound(alarm.sound_ref)) {
-      els.soundSelect.value = alarm.sound_ref;
-    } else if (els.soundSelect.options.length) {
-      els.soundSelect.selectedIndex = 0;
-      if (editing && alarm.sound_ref && alarm.sound_type !== "url") {
+    const refs = editing && alarm.sound_type !== "url" ? soundRefsForAlarm(alarm) : [];
+    const validRefs = refs.filter(hasSound);
+    if (validRefs.length) {
+      setSelectedSounds(validRefs);
+    } else {
+      setSelectedSounds([]);
+      if (editing && refs.length) {
         showFormError("選択済みの音源が見つからないため、別の音源を選択しています。保存すると更新されます。");
       }
     }
@@ -1462,6 +1867,7 @@
 
   function closeAlarmModal() {
     AudioEditor.reset();
+    stopSoundPreview();
     els.modalOverlay.classList.remove("modal-open");
     els.modalOverlay.setAttribute("aria-hidden", "true");
     closeModalTimer = setTimeout(() => {
@@ -1481,14 +1887,28 @@
       if (!url) throw new Error("URLを入力してください。");
       return { sound_type: "url", sound_ref: url };
     }
+    if (activeSoundTab === "youtube") {
+      const downloaded = await downloadYouTubeSound({
+        urlInput: els.youtubeUrl,
+        filenameInput: els.youtubeFilename,
+        button: els.downloadYoutubeBtn,
+        status: els.youtubeStatus,
+      });
+      if (!downloaded) throw new Error("YouTube音源を取り込めませんでした。");
+      return { sound_type: "upload", sound_ref: downloaded.name };
+    }
     if (activeSoundTab === "upload") {
       throw new Error("先に［アップロード］ボタンで音源を登録してください");
     }
-    return { sound_type: "upload", sound_ref: els.soundSelect.value || "alarm_long.mp3" };
+    const selected = selectedSoundValues();
+    if (!selected.length) throw new Error("音源を選択してください。");
+    if (selected.length === 1) return { sound_type: "upload", sound_ref: selected[0] };
+    return { sound_type: "random", sound_ref: JSON.stringify(selected) };
   }
 
   async function saveAlarm(event) {
     event.preventDefault();
+    if (!event.submitter && document.activeElement && document.activeElement.closest(".youtube-import-panel")) return;
     showFormError("");
     if (!els.alarmTime.value) {
       showFormError("時刻を入力してください。");
@@ -1561,6 +1981,7 @@
 
   async function saveSettings(event) {
     event.preventDefault();
+    if (!event.submitter && document.activeElement && document.activeElement.closest(".youtube-import-panel")) return;
     await withLoading($("save-settings"), async () => {
       const defaults = els.settings.default_devices.value
         .split(",")
@@ -1712,6 +2133,11 @@
     });
     els.form.addEventListener("submit", saveAlarm);
     els.form.addEventListener("keydown", (event) => {
+      if (isComposingInput(event)) return;
+      if (event.target.closest(".youtube-import-panel") && event.key === "Enter") {
+        event.preventDefault();
+        return;
+      }
       const tag = event.target.tagName;
       const type = event.target.type;
       if (event.key === "Enter" && tag !== "TEXTAREA" && tag !== "BUTTON" && type !== "file") {
@@ -1745,6 +2171,22 @@
     els.managerPreviewBtn.addEventListener("click", () => ManagerAudioEditor.togglePreview());
     els.doUploadBtn.addEventListener("click", () => AudioEditor.upload());
     els.managerDoUploadBtn.addEventListener("click", () => ManagerAudioEditor.upload());
+    els.downloadYoutubeBtn.addEventListener("click", () => downloadYouTubeSound({
+      urlInput: els.youtubeUrl,
+      filenameInput: els.youtubeFilename,
+      button: els.downloadYoutubeBtn,
+      status: els.youtubeStatus,
+    }));
+    els.managerDownloadYoutubeBtn.addEventListener("click", () => downloadYouTubeSound({
+      urlInput: els.managerYoutubeUrl,
+      filenameInput: els.managerYoutubeFilename,
+      button: els.managerDownloadYoutubeBtn,
+      status: els.managerYoutubeStatus,
+    }, { switchToExisting: false }));
+    bindEnterToDownload(els.youtubeUrl, els.downloadYoutubeBtn);
+    bindEnterToDownload(els.youtubeFilename, els.downloadYoutubeBtn);
+    bindEnterToDownload(els.managerYoutubeUrl, els.managerDownloadYoutubeBtn);
+    bindEnterToDownload(els.managerYoutubeFilename, els.managerDownloadYoutubeBtn);
     document.addEventListener("keydown", trapModalKeyboard);
     document.addEventListener("click", addRipple);
     bindDropZone();

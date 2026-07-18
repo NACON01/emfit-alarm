@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -30,12 +31,25 @@ def _json_list(value: Any, default: list[Any] | None = None) -> list[Any]:
 
 
 def _sound_url_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> str:
+    urls = _sound_urls_for_alarm(alarm, settings)
+    return random.choice(urls) if urls else ""
+
+
+def _sound_urls_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> list[str]:
     sound_ref = alarm.get("sound_ref") or ""
+    if alarm.get("sound_type") == "random":
+        refs = [str(item) for item in _json_list(sound_ref, []) if str(item)]
+        urls = [f"{HOST_AUDIO_BASE}/{quote(ref)}" for ref in refs]
+        if urls:
+            return urls
+        fallback = str(settings.get("fallback_url") or "")
+        return [fallback] if fallback else []
     if alarm.get("sound_type") == "upload" and sound_ref:
-        return f"{HOST_AUDIO_BASE}/{quote(str(sound_ref))}"
+        return [f"{HOST_AUDIO_BASE}/{quote(str(sound_ref))}"]
     if sound_ref:
-        return sound_ref
-    return str(settings.get("fallback_url") or "")
+        return [str(sound_ref)]
+    fallback = str(settings.get("fallback_url") or "")
+    return [fallback] if fallback else []
 
 
 def _devices_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> list[str]:
@@ -87,15 +101,15 @@ async def scheduler_loop() -> None:
                 continue
 
             settings = get_settings()
-            sound_url = _sound_url_for_alarm(alarm, settings)
-            if not sound_url:
+            sound_urls = _sound_urls_for_alarm(alarm, settings)
+            if not sound_urls:
                 LOGGER.warning("alarm %s skipped because it has no sound URL", alarm["id"])
                 continue
             devices = _devices_for_alarm(alarm, settings)
             device_name = devices[0] if devices else "ぬま"
             await ring.start_session(
                 int(alarm["id"]),
-                sound_url,
+                sound_urls,
                 device_name,
                 _settings_for_alarm(alarm, settings),
             )

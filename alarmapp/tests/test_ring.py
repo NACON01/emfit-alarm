@@ -85,6 +85,11 @@ def session(**overrides):
     return ring.RingSession(1, "http://example.test/alarm.mp3", "ぬま", settings(**overrides))
 
 
+def random_session(**overrides):
+    urls = ["http://example.test/a.mp3", "http://example.test/b.mp3"]
+    return ring.RingSession(1, urls, "ぬま", settings(**overrides))
+
+
 async def set_in_bed(monkeypatch, values):
     remaining = list(values)
 
@@ -238,6 +243,17 @@ async def test_finished_audio_is_recast():
 
     assert alarm.state == "RINGING"
     assert len(cast.play_calls) == 1
+
+
+def test_ring_session_accepts_random_sound_urls(monkeypatch):
+    monkeypatch.setattr(ring.random, "choice", lambda values: values[-1])
+    alarm = random_session()
+    cast = FakeCastSession.instances[-1]
+
+    alarm._recast()
+
+    assert cast.play_calls == [("http://example.test/b.mp3", "audio/mpeg")]
+    assert alarm.sound_url == "http://example.test/b.mp3"
 
 
 @pytest.mark.asyncio

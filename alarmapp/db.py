@@ -64,6 +64,14 @@ def _json_text(value: Any, default: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _sound_ref_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -128,7 +136,7 @@ def create_alarm(**kwargs: Any) -> dict[str, Any]:
         "repeat_days": _json_text(kwargs.get("repeat_days"), []),
         "enabled": int(bool(kwargs.get("enabled", True))),
         "sound_type": kwargs.get("sound_type") or "upload",
-        "sound_ref": kwargs.get("sound_ref") or "alarm_long.mp3",
+        "sound_ref": _sound_ref_text(kwargs.get("sound_ref") or "alarm_long.mp3"),
         "volume": float(kwargs.get("volume", 1.0)),
         "devices": _json_text(kwargs.get("devices"), DEFAULT_SETTINGS["default_devices"]),
         "wake_check": int(bool(kwargs.get("wake_check", True))),
@@ -173,6 +181,8 @@ def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
             continue
         if key in {"repeat_days", "devices"}:
             value = _json_text(value, [])
+        elif key == "sound_ref":
+            value = _sound_ref_text(value)
         elif key in {"enabled", "wake_check"} and value is not None:
             value = int(bool(value))
         elif key == "volume" and value is not None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime
 from typing import Any
 
@@ -50,12 +51,16 @@ class RingSession:
     def __init__(
         self,
         alarm_id: int,
-        sound_url: str,
+        sound_url: str | list[str],
         device_name: str,
         settings_dict: dict[str, Any],
     ):
         self.alarm_id = alarm_id
-        self.sound_url = sound_url
+        if isinstance(sound_url, list):
+            self.sound_urls = [str(url) for url in sound_url if str(url)]
+        else:
+            self.sound_urls = [str(sound_url)] if str(sound_url) else []
+        self.sound_url = self.sound_urls[0] if self.sound_urls else ""
         self.device_name = device_name
         self.settings = settings_dict.copy()
         self.state = "RINGING"
@@ -298,6 +303,8 @@ class RingSession:
         self._settle_tick = True
 
     def _recast(self) -> None:
+        if self.sound_urls:
+            self.sound_url = random.choice(self.sound_urls)
         self._seen_playing = False
         self._set_target_volume()
         self._caster.play(self.sound_url, guess_audio_mime(self.sound_url))
@@ -333,7 +340,7 @@ class RingSession:
 
 async def start_session(
     alarm_id: int,
-    sound_url: str,
+    sound_url: str | list[str],
     device_name: str,
     settings: dict[str, Any],
 ) -> dict[str, Any]:

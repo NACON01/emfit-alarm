@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 import db
 import scheduler
@@ -48,3 +49,20 @@ def test_next_alarm_recovers_stale_last_fired_date(tmp_path, monkeypatch):
     assert next_alarm is not None
     assert next_alarm["id"] == alarm["id"]
     assert db.get_alarm(alarm["id"])["last_fired_date"] is None
+
+
+def test_random_alarm_sound_refs_expand_to_upload_urls():
+    refs = ["one.mp3", "folder name.wav"]
+    alarm = {"sound_type": "random", "sound_ref": refs}
+
+    urls = scheduler._sound_urls_for_alarm(alarm, {"fallback_url": ""})
+
+    assert urls == [f"{scheduler.HOST_AUDIO_BASE}/{quote(name)}" for name in refs]
+
+
+def test_random_alarm_uses_fallback_when_refs_empty():
+    alarm = {"sound_type": "random", "sound_ref": "[]"}
+
+    urls = scheduler._sound_urls_for_alarm(alarm, {"fallback_url": "https://example.test/fallback.mp3"})
+
+    assert urls == ["https://example.test/fallback.mp3"]

@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Wake Alarm</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <script src="/static/app.js" defer></script>
+    <link rel="stylesheet" href="/static/style.css?v=20260703-preview-panel">
+    <script src="/static/app.js?v=20260703-preview-panel" defer></script>
   </head>
   <body>
     <header id="hero-header" class="hero-header">
@@ -124,6 +124,14 @@
 
           <div class="settings-group sound-manager-group">
             <h2>音源を管理</h2>
+            <div class="youtube-import-panel">
+              <div class="youtube-import-row">
+                <input id="manager-youtube-url" type="url" placeholder="YouTube URL">
+                <input id="manager-youtube-filename" type="text" placeholder="ファイル名（任意）">
+                <button id="manager-download-youtube-btn" type="button" class="btn-accent">DL</button>
+              </div>
+              <div id="manager-youtube-status" class="upload-status" aria-live="polite"></div>
+            </div>
             <div class="sound-panel sound-manager-upload-panel">
               <label id="manager-drop-zone" class="drop-zone">
                 <input id="sound-manager-file" type="file" accept="audio/mpeg,.mp3">
@@ -161,6 +169,14 @@
               </div>
             </div>
             <div id="sound-manager-list" class="sound-manager-list" aria-live="polite"></div>
+            <div id="manager-sound-preview-panel" class="sound-preview-panel hidden">
+              <div id="manager-sound-preview-title" class="sound-preview-title">プレビュー</div>
+              <div class="sound-preview-controls">
+                <span id="manager-sound-preview-current" class="sound-preview-time">0:00</span>
+                <input id="manager-sound-preview-seek" class="sound-preview-seek" type="range" min="0" max="1000" step="1" value="0">
+                <span id="manager-sound-preview-duration" class="sound-preview-time">--:--</span>
+              </div>
+            </div>
             <div id="sound-manager-message" class="sound-manager-message" aria-live="polite"></div>
           </div>
 
@@ -225,10 +241,19 @@
             <div id="sound-tabs" class="segment-control tab-existing" role="tablist" aria-label="音源タイプ">
               <button class="tab active" data-sound-tab="existing" type="button" role="tab" aria-selected="true">既存</button>
               <button class="tab" data-sound-tab="upload" type="button" role="tab" aria-selected="false">アップロード</button>
+              <button class="tab" data-sound-tab="youtube" type="button" role="tab" aria-selected="false">YouTube</button>
               <button class="tab" data-sound-tab="url" type="button" role="tab" aria-selected="false">URL</button>
             </div>
             <div id="sound-existing" class="sound-panel">
-              <select id="alarm-sound-select"></select>
+              <div id="alarm-sound-list" class="sound-choice-list"></div>
+              <div id="alarm-sound-preview-panel" class="sound-preview-panel hidden">
+                <div id="alarm-sound-preview-title" class="sound-preview-title">プレビュー</div>
+                <div class="sound-preview-controls">
+                  <span id="alarm-sound-preview-current" class="sound-preview-time">0:00</span>
+                  <input id="alarm-sound-preview-seek" class="sound-preview-seek" type="range" min="0" max="1000" step="1" value="0">
+                  <span id="alarm-sound-preview-duration" class="sound-preview-time">--:--</span>
+                </div>
+              </div>
             </div>
             <div id="sound-upload" class="sound-panel hidden">
               <label id="drop-zone" class="drop-zone">
@@ -264,6 +289,16 @@
                   </div>
                 </div>
                 <div id="upload-status" class="upload-status"></div>
+              </div>
+            </div>
+            <div id="sound-youtube" class="sound-panel hidden">
+              <div class="youtube-import-panel">
+                <div class="youtube-import-row">
+                  <input id="alarm-youtube-url" type="url" placeholder="YouTube URL">
+                  <input id="alarm-youtube-filename" type="text" placeholder="ファイル名（任意）">
+                  <button id="download-youtube-btn" type="button" class="btn-accent">DL</button>
+                </div>
+                <div id="alarm-youtube-status" class="upload-status" aria-live="polite"></div>
               </div>
             </div>
             <div id="sound-url" class="sound-panel hidden">
