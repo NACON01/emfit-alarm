@@ -15,11 +15,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
 
-import caster
+import player
 import emfit
 import ring
 from db import create_alarm, delete_alarm, get_all_alarms, get_alarm, get_settings, init_db, update_alarm, update_settings
-from scheduler import HOST_AUDIO_BASE, get_next_alarm, scheduler_loop
+from scheduler import get_next_alarm, scheduler_loop
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -84,7 +84,7 @@ def public_alarm(alarm: dict[str, Any]) -> dict[str, Any]:
         "enabled": bool(alarm.get("enabled")),
         "wake_check": bool(alarm.get("wake_check")),
         "repeat_days": _json_list(alarm.get("repeat_days"), []),
-        "devices": _json_list(alarm.get("devices"), ["ぬま"]),
+        "devices": _json_list(alarm.get("devices"), ["Miku-Miku Echo"]),
         "sound_refs": _sound_refs_for_alarm(alarm),
     }
 
@@ -110,7 +110,7 @@ def _sound_info(path: Path) -> dict[str, Any]:
 
 
 def sound_file_url(name: str) -> str:
-    return f"{HOST_AUDIO_BASE}/{quote(name)}"
+    return f"/sounds/{quote(name)}"
 
 
 def _safe_sound_name(name: str) -> str:
@@ -465,15 +465,15 @@ def _build_test_ring(mode: str = "sound") -> tuple[str, str, dict[str, Any]]:
     settings = get_settings()
     sounds = list_sound_files()
     sound_name = sounds[0]["name"] if sounds else "alarm_long.mp3"
-    sound_url = sound_file_url(sound_name)
-    devices = settings.get("default_devices") or ["ぬま"]
+    sound_url = str(_sound_path(sound_name))
+    devices = settings.get("default_devices") or ["Miku-Miku Echo"]
     if not isinstance(devices, list):
-        devices = _json_list(devices, ["ぬま"])
-    device = str(devices[0]) if devices else "ぬま"
+        devices = _json_list(devices, ["Miku-Miku Echo"])
+    device = str(devices[0]) if devices else "Miku-Miku Echo"
     if mode == "real":
         test_settings = {
             **settings,
-            # keep emfit_enabled/volume_ack_enabled/thresholds as configured,
+            # keep the configured sensor and timing settings,
             "wake_check": True,
             "max_session_sec": REAL_TEST_MAX_SECONDS,
         }
@@ -482,7 +482,6 @@ def _build_test_ring(mode: str = "sound") -> tuple[str, str, dict[str, Any]]:
             **settings,
             "emfit_enabled": False,
             "wake_check": False,
-            "volume_ack_enabled": False,
             "max_session_sec": TEST_RING_SECONDS,
         }
     return sound_url, device, test_settings
@@ -515,7 +514,7 @@ if FASTAPI_AVAILABLE:
         sound_type: str = "upload"
         sound_ref: str | list[str] = "alarm_long.mp3"
         volume: float = 1.0
-        devices: list[str] = Field(default_factory=lambda: ["ぬま"])
+        devices: list[str] = Field(default_factory=lambda: ["Miku-Miku Echo"])
         wake_check: bool = True
 
 
@@ -689,7 +688,7 @@ if FASTAPI_AVAILABLE:
 
     @app.get("/api/devices")
     async def api_devices() -> dict[str, Any]:
-        devices = await asyncio.to_thread(caster.discover_devices, 5)
+        devices = await asyncio.to_thread(player.discover_devices)
         return {"devices": devices, "names": [device["name"] for device in devices if device.get("name")]}
 
 
@@ -723,6 +722,60 @@ if FASTAPI_AVAILABLE:
         return update_settings(payload)
 
 else:
+
+    class _CompatModel:
+        _defaults: dict[str, Any] = {}
+
+        def __init__(self, **kwargs: Any):
+            self._provided = set(kwargs)
+            for key, default in self._defaults.items():
+                setattr(self, key, kwargs.get(key, default))
+
+        def dict(self, exclude_unset: bool = False) -> dict[str, Any]:
+            keys = self._provided if exclude_unset else self._defaults
+            return {key: getattr(self, key) for key in keys if key in self._defaults}
+
+    class AlarmCreate(_CompatModel):
+        _defaults = {
+            "label": "Alarm", "time": "07:00", "repeat_days": [], "enabled": True,
+            "sound_type": "upload", "sound_ref": "alarm_long.mp3", "volume": 1.0,
+            "devices": ["Miku-Miku Echo"], "wake_check": True,
+        }
+
+    class AlarmUpdate(_CompatModel):
+        _defaults = {
+            "label": None, "time": None, "repeat_days": None, "enabled": None,
+            "sound_type": None, "sound_ref": None, "volume": None, "devices": None,
+            "wake_check": None, "last_fired_date": None,
+        }
+
+    class YouTubeDownload(_CompatModel):
+        _defaults = {"url": "", "filename": None}
+
+    async def api_status() -> dict[str, Any]:
+        return _status_payload()
+
+    async def api_get_alarms() -> list[dict[str, Any]]:
+        return [public_alarm(alarm) for alarm in get_all_alarms()]
+
+    async def api_create_alarm(payload: AlarmCreate) -> dict[str, Any]:
+        return public_alarm(create_alarm(**_model_payload(payload)))
+
+    async def api_update_alarm(alarm_id: int, payload: AlarmUpdate) -> dict[str, Any]:
+        alarm = update_alarm(alarm_id, **_model_payload(payload, exclude_unset=True))
+        return public_alarm(alarm or {})
+
+    async def api_delete_alarm(alarm_id: int) -> dict[str, bool]:
+        return {"ok": delete_alarm(alarm_id)}
+
+    async def api_download_youtube_sound(payload: YouTubeDownload) -> dict[str, Any]:
+        return await asyncio.to_thread(download_youtube_audio, payload.url, payload.filename)
+
+    async def api_get_settings() -> dict[str, Any]:
+        return get_settings()
+
+    async def api_update_settings(payload: dict[str, Any]) -> dict[str, Any]:
+        return update_settings(payload)
 
     class MinimalASGIApp:
         def __init__(self) -> None:
@@ -837,7 +890,7 @@ else:
                     deleted = delete_sound(path.removeprefix("/api/sounds/"))
                     await self._json(send, {"ok": deleted})
                 elif path == "/api/devices" and method == "GET":
-                    devices = await asyncio.to_thread(caster.discover_devices, 5)
+                    devices = await asyncio.to_thread(player.discover_devices)
                     await self._json(send, {"devices": devices, "names": [d["name"] for d in devices if d.get("name")]})
                 elif path == "/api/ring/test" and method == "POST":
                     mode = str(self._json_body(body).get("mode", "sound"))

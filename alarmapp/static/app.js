@@ -118,24 +118,22 @@
     deleteAlarm: $("delete-alarm"),
     settings: {
       emfit_enabled: $("setting-emfit-enabled"),
-      volume_ack_enabled: $("setting-volume-ack-enabled"),
       awake_confirm_sec: $("setting-awake-confirm-sec"),
       grace_sec: $("setting-grace-sec"),
       poll_sec: $("setting-poll-sec"),
       ring_volume: $("setting-ring-volume"),
-      volume_ack_epsilon: $("setting-volume-ack-epsilon"),
       none_continue_sec: $("setting-none-continue-sec"),
       max_session_sec: $("setting-max-session-sec"),
       default_devices: $("setting-default-devices"),
+      bt_mac: $("setting-bt-mac"),
       fallback_url: $("setting-fallback-url"),
       ring_volume_output: $("setting-ring-volume-output"),
-      epsilon_output: $("setting-epsilon-output"),
     },
   };
 
   let alarms = [];
   let sounds = [];
-  let deviceNames = ["ぬま"];
+  let deviceNames = ["Miku-Miku Echo"];
   let activeSoundTab = "existing";
   let selectedDays = new Set();
   let previousState = "IDLE";
@@ -1718,7 +1716,7 @@
           enabled: Boolean(alarm.enabled),
           wake_check: Boolean(alarm.wake_check),
           volume: Number(alarm.volume) || 1,
-          devices: Array.isArray(alarm.devices) && alarm.devices.length ? alarm.devices : ["ぬま"],
+          devices: Array.isArray(alarm.devices) && alarm.devices.length ? alarm.devices : ["Miku-Miku Echo"],
           sound_type,
           sound_ref,
         }),
@@ -1728,13 +1726,13 @@
 
   async function loadDevices(preselect) {
     const data = await safeApi("/api/devices", undefined, { names: [] });
-    const merged = new Set(["ぬま", ...(Array.isArray(data.names) ? data.names : []), ...(preselect || [])]);
+    const merged = new Set(["Miku-Miku Echo", ...(Array.isArray(data.names) ? data.names : []), ...(preselect || [])]);
     deviceNames = Array.from(merged).filter(Boolean);
-    renderDeviceOptions(preselect || ["ぬま"]);
+    renderDeviceOptions(preselect || ["Miku-Miku Echo"]);
   }
 
   function renderDeviceOptions(preselect) {
-    const selected = new Set(preselect && preselect.length ? preselect : ["ぬま"]);
+    const selected = new Set(preselect && preselect.length ? preselect : ["Miku-Miku Echo"]);
     els.devices.textContent = "";
     deviceNames.forEach((name) => {
       const label = document.createElement("label");
@@ -1754,7 +1752,7 @@
     const values = Array.from(els.devices.querySelectorAll("input:checked"))
       .map((input) => input.value)
       .filter(Boolean);
-    return values.length ? values : ["ぬま"];
+    return values.length ? values : ["Miku-Miku Echo"];
   }
 
   function sameDays(left, right) {
@@ -1817,7 +1815,6 @@
 
   function updateSettingsOutputs() {
     els.settings.ring_volume_output.textContent = `${Number(els.settings.ring_volume.value) || 0}%`;
-    els.settings.epsilon_output.textContent = Number(els.settings.volume_ack_epsilon.value || 0).toFixed(2);
   }
 
   function showFormError(message) {
@@ -1854,8 +1851,8 @@
       }
     }
     setSoundTab(editing && alarm.sound_type === "url" ? "url" : "existing");
-    renderDeviceOptions(editing ? alarm.devices || ["ぬま"] : ["ぬま"]);
-    loadDevices(editing ? alarm.devices || ["ぬま"] : ["ぬま"]);
+    renderDeviceOptions(editing ? alarm.devices || ["Miku-Miku Echo"] : ["Miku-Miku Echo"]);
+    loadDevices(editing ? alarm.devices || ["Miku-Miku Echo"] : ["Miku-Miku Echo"]);
     els.deleteAlarm.classList.toggle("hidden", !editing);
 
     if (closeModalTimer) clearTimeout(closeModalTimer);
@@ -1964,14 +1961,13 @@
     if (!settings) return;
     currentSettings = settings;
     els.settings.emfit_enabled.checked = Boolean(settings.emfit_enabled);
-    els.settings.volume_ack_enabled.checked = Boolean(settings.volume_ack_enabled);
     els.settings.awake_confirm_sec.value = settings.awake_confirm_sec == null ? "" : Math.round(Number(settings.awake_confirm_sec) / 60);
     els.settings.grace_sec.value = settings.grace_sec ?? "";
     els.settings.poll_sec.value = settings.poll_sec ?? "";
     els.settings.ring_volume.value = Math.round((Number(settings.ring_volume) || 0) * 100);
-    els.settings.volume_ack_epsilon.value = settings.volume_ack_epsilon ?? 0.1;
     els.settings.none_continue_sec.value = settings.none_continue_sec ?? "";
     els.settings.max_session_sec.value = settings.max_session_sec == null ? "" : Math.round(Number(settings.max_session_sec) / 60);
+    els.settings.bt_mac.value = settings.bt_mac || "";
     els.settings.default_devices.value = Array.isArray(settings.default_devices)
       ? settings.default_devices.join(", ")
       : settings.default_devices || "";
@@ -1989,15 +1985,14 @@
         .filter(Boolean);
       const payload = {
         emfit_enabled: els.settings.emfit_enabled.checked,
-        volume_ack_enabled: els.settings.volume_ack_enabled.checked,
         awake_confirm_sec: Number(els.settings.awake_confirm_sec.value) * 60,
         grace_sec: Number(els.settings.grace_sec.value),
         poll_sec: Number(els.settings.poll_sec.value),
         ring_volume: Number(els.settings.ring_volume.value) / 100,
-        volume_ack_epsilon: Number(els.settings.volume_ack_epsilon.value),
         none_continue_sec: Number(els.settings.none_continue_sec.value),
         max_session_sec: Number(els.settings.max_session_sec.value) * 60,
-        default_devices: defaults.length ? defaults : ["ぬま"],
+        default_devices: defaults.length ? defaults : ["Miku-Miku Echo"],
+        bt_mac: els.settings.bt_mac.value.trim(),
         fallback_url: els.settings.fallback_url.value.trim(),
       };
       try {
@@ -2149,7 +2144,6 @@
     els.volume.addEventListener("input", updateVolumeOutput);
     els.settingsForm.addEventListener("submit", saveSettings);
     els.settings.ring_volume.addEventListener("input", updateSettingsOutputs);
-    els.settings.volume_ack_epsilon.addEventListener("input", updateSettingsOutputs);
     document.querySelectorAll(".preset").forEach((button) => {
       button.addEventListener("click", () => {
         const days = button.dataset.days ? button.dataset.days.split(",").map(Number) : [];

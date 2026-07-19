@@ -14,7 +14,7 @@ def test_alarm_crud_and_settings_round_trip(tmp_path, monkeypatch):
         sound_type="upload",
         sound_ref="alarm_long.mp3",
         volume=0.75,
-        devices=["ぬま"],
+        devices=["Miku-Miku Echo"],
         wake_check=True,
     )
 
@@ -41,13 +41,13 @@ def test_alarm_crud_and_settings_round_trip(tmp_path, monkeypatch):
         {
             "emfit_enabled": False,
             "ring_volume": 0.4,
-            "default_devices": ["Bedroom", "ぬま"],
+            "default_devices": ["Bedroom", "Miku-Miku Echo"],
             "fallback_url": "https://example.test/alarm.mp3",
         }
     )
     assert settings["emfit_enabled"] is False
     assert settings["ring_volume"] == 0.4
-    assert settings["default_devices"] == ["Bedroom", "ぬま"]
+    assert settings["default_devices"] == ["Bedroom", "Miku-Miku Echo"]
     assert settings["fallback_url"] == "https://example.test/alarm.mp3"
 
     assert db.delete_alarm(created["id"]) is True

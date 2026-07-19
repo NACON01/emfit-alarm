@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=minipc
-WorkingDirectory=/home/minipc/chromecast/emfit-api
-EnvironmentFile=/home/minipc/chromecast/deploy/emfit.env
+User=okazaki
+WorkingDirectory=/home/okazaki/emfit-alarm/emfit-api
+EnvironmentFile=/home/okazaki/emfit-alarm/deploy/emfit.env
 ExecStart=/usr/bin/python3 -m qs2.main
 Restart=always
 RestartSec=5

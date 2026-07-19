@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from urllib.parse import quote
 
 import db
 import scheduler
@@ -57,7 +56,7 @@ def test_random_alarm_sound_refs_expand_to_upload_urls():
 
     urls = scheduler._sound_urls_for_alarm(alarm, {"fallback_url": ""})
 
-    assert urls == [f"{scheduler.HOST_AUDIO_BASE}/{quote(name)}" for name in refs]
+    assert urls == [str(scheduler.SOUNDS_DIR / name) for name in refs]
 
 
 def test_random_alarm_uses_fallback_when_refs_empty():

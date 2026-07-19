@@ -6,14 +6,15 @@ import logging
 import random
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import urlparse
 
 import ring
 from db import get_all_alarms, get_settings, update_alarm
+from paths import SOUNDS_DIR, default_sound_path, sound_path
 
 
 LOGGER = logging.getLogger(__name__)
-HOST_AUDIO_BASE = "http://192.168.0.45:8123/sounds"
+DEFAULT_DEVICE = "Miku-Miku Echo"
 
 
 def _json_list(value: Any, default: list[Any] | None = None) -> list[Any]:
@@ -30,6 +31,14 @@ def _json_list(value: Any, default: list[Any] | None = None) -> list[Any]:
         return default
 
 
+def _fallback_sound(settings: dict[str, Any]) -> str:
+    fallback = str(settings.get("fallback_url") or "").strip()
+    parsed = urlparse(fallback)
+    if parsed.scheme and parsed.scheme.lower() != "file":
+        return fallback
+    return default_sound_path()
+
+
 def _sound_url_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> str:
     urls = _sound_urls_for_alarm(alarm, settings)
     return random.choice(urls) if urls else ""
@@ -37,27 +46,30 @@ def _sound_url_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> str
 
 def _sound_urls_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> list[str]:
     sound_ref = alarm.get("sound_ref") or ""
-    if alarm.get("sound_type") == "random":
+    sound_type = alarm.get("sound_type")
+    if sound_type == "random":
         refs = [str(item) for item in _json_list(sound_ref, []) if str(item)]
-        urls = [f"{HOST_AUDIO_BASE}/{quote(ref)}" for ref in refs]
-        if urls:
-            return urls
-        fallback = str(settings.get("fallback_url") or "")
-        return [fallback] if fallback else []
-    if alarm.get("sound_type") == "upload" and sound_ref:
-        return [f"{HOST_AUDIO_BASE}/{quote(str(sound_ref))}"]
+        try:
+            urls = [str(sound_path(ref)) for ref in refs]
+        except ValueError:
+            urls = []
+        return urls or [_fallback_sound(settings)]
+    if sound_type == "upload" and sound_ref:
+        try:
+            return [str(sound_path(str(sound_ref)))]
+        except ValueError:
+            return [_fallback_sound(settings)]
     if sound_ref:
         return [str(sound_ref)]
-    fallback = str(settings.get("fallback_url") or "")
-    return [fallback] if fallback else []
+    return [_fallback_sound(settings)]
 
 
 def _devices_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> list[str]:
     devices = _json_list(alarm.get("devices"), [])
-    default_devices = settings.get("default_devices", ["ぬま"])
+    default_devices = settings.get("default_devices", [DEFAULT_DEVICE])
     if not isinstance(default_devices, list):
-        default_devices = _json_list(default_devices, ["ぬま"])
-    return [str(device) for device in (devices or default_devices or ["ぬま"])]
+        default_devices = _json_list(default_devices, [DEFAULT_DEVICE])
+    return [str(device) for device in (devices or default_devices or [DEFAULT_DEVICE])]
 
 
 def _settings_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
@@ -96,17 +108,16 @@ async def scheduler_loop() -> None:
                 continue
             if alarm.get("last_fired_date") == today_str:
                 continue
-
             if days and today_weekday not in [int(day) for day in days]:
                 continue
 
             settings = get_settings()
             sound_urls = _sound_urls_for_alarm(alarm, settings)
             if not sound_urls:
-                LOGGER.warning("alarm %s skipped because it has no sound URL", alarm["id"])
+                LOGGER.warning("alarm %s skipped because it has no sound", alarm["id"])
                 continue
             devices = _devices_for_alarm(alarm, settings)
-            device_name = devices[0] if devices else "ぬま"
+            device_name = devices[0] if devices else DEFAULT_DEVICE
             await ring.start_session(
                 int(alarm["id"]),
                 sound_urls,

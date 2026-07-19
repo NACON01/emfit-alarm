@@ -6,24 +6,11 @@ import random
 from datetime import datetime
 from typing import Any
 
-import caster
 import emfit
+import player
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-def guess_audio_mime(url: str) -> str:
-    low = url.lower().split("?")[0]
-    if low.endswith(".wav"):
-        return "audio/wav"
-    if low.endswith((".ogg", ".oga")):
-        return "audio/ogg"
-    if low.endswith((".m4a", ".aac")):
-        return "audio/aac"
-    if low.endswith(".flac"):
-        return "audio/flac"
-    return "audio/mpeg"
 
 
 current_session: "RingSession | None" = None
@@ -73,33 +60,20 @@ class RingSession:
         self._snooze_requested = False
         self._hard_stop = False
         self._task: asyncio.Task[Any] | None = None
-        self._caster = caster.CastSession(device_name)
-        self._volume_ack_ticks = 0
-        self._media_stop_ticks = 0
-        self._settle_tick = False
-        self._seen_playing = False
-
-        # The ring loop ticks fast (for snappy volume-ACK); emfit is read from
-        # the cache kept fresh by the background poller, so a fast tick does not
-        # hammer the slow sensor endpoint.
         self.tick_sec = max(0.01, _as_float(self.settings.get("tick_sec"), 1.0))
-        self.volume_ack_ticks_required = max(1, int(_as_float(self.settings.get("volume_ack_ticks_required"), 2)))
-        self.media_stop_ticks_required = max(1, int(_as_float(self.settings.get("media_stop_ticks_required"), 2)))
         self.poll_sec = max(0.01, _as_float(self.settings.get("poll_sec"), 5.0))
         self.ring_volume = max(0.0, min(1.0, _as_float(self.settings.get("ring_volume"), 1.0)))
-        self.volume_ack_epsilon = max(0.0, _as_float(self.settings.get("volume_ack_epsilon"), 0.05))
         self.awake_confirm_sec = max(0.01, _as_float(self.settings.get("awake_confirm_sec"), 180.0))
         self.grace_sec = max(0.01, _as_float(self.settings.get("grace_sec"), 120.0))
         self.none_continue_sec = max(0.01, _as_float(self.settings.get("none_continue_sec"), 60.0))
         self.max_session_sec = max(0.01, _as_float(self.settings.get("max_session_sec"), 1800.0))
-        self.volume_ack_enabled = _as_bool(self.settings.get("volume_ack_enabled"), True)
         self.wake_check = _as_bool(self.settings.get("wake_check"), True)
         self.emfit_enabled = _as_bool(self.settings.get("emfit_enabled"), True) and self.wake_check
+        self.player = player.BtPlayer(device_name, str(self.settings.get("bt_mac") or ""))
+        self._playback_started = False
 
     def request_snooze(self) -> None:
-        """Web button: silence and keep monitoring. For wake-check sessions this
-        is NOT a full dismiss — it re-rings if still/again in bed; only a
-        sustained out-of-bed (woke) or the safety timeout ends it."""
+        """Silence the alarm temporarily while continuing bed monitoring."""
         self._snooze_requested = True
 
     def manual_stop(self) -> None:
@@ -117,8 +91,7 @@ class RingSession:
                 if self.ended_reason is None:
                     await asyncio.sleep(self.tick_sec)
         finally:
-            self._caster.stop()
-            self._caster.disconnect()
+            self.player.stop()
             await self._clear_current()
             LOGGER.info("ring session ended alarm=%s reason=%s", self.alarm_id, self.ended_reason)
 
@@ -130,19 +103,15 @@ class RingSession:
 
     async def _tick(self) -> None:
         if self._hard_stop:
-            self._caster.stop()
+            self.player.stop()
             self._end("manual")
             return
         if self._snooze_requested:
             self._snooze_requested = False
+            self.player.stop()
             if self.wake_check and self.emfit_enabled:
-                # Snooze: silence and keep monitoring; re-rings after grace if
-                # still in bed (or on return to bed). No full dismissal.
-                self._caster.stop()
                 self._enter_ack_grace()
             else:
-                # No bed monitoring on this alarm — nothing to keep watching.
-                self._caster.stop()
                 self._end("manual")
             return
         if self._elapsed_sec() > self.max_session_sec:
@@ -154,85 +123,28 @@ class RingSession:
             await self._tick_ack_grace()
         elif self.state == "OUT":
             await self._tick_out()
-        elif self.state == "ENDED":
-            return
-        else:
+        elif self.state != "ENDED":
             LOGGER.warning("unknown ring state %s; ending session", self.state)
             self._end("error")
 
     async def _tick_ringing(self) -> None:
-        if self.emfit_enabled:
-            in_bed = emfit.cached_in_bed()
-            if in_bed is False:
-                self._caster.stop()
-                self._enter_out()
-                return
-
-        state_str = self._caster.player_state().upper()
-        reason = self._caster.idle_reason().upper()
-
-        # Ignore stale media state left over from a previous clip until the
-        # freshly-cast media actually starts. Otherwise a leftover CANCELLED/
-        # FINISHED idle_reason right after _recast() ends the session early.
-        if state_str in {"PLAYING", "BUFFERING"}:
-            self._seen_playing = True
-            self._media_stop_ticks = 0
-        if not self._seen_playing:
+        if self.emfit_enabled and emfit.cached_in_bed() is False:
+            self.player.stop()
+            self._enter_out()
             return
 
-        if reason == "FINISHED":
-            self._media_stop_ticks = 0
-            if self.wake_check:
-                self._recast()
-            else:
-                self._end("finished")
+        if self.player.is_playing():
             return
-        if reason in {"CANCELLED", "INTERRUPTED", "STOPPED"} or (
-            state_str == "IDLE" and reason not in {"", "FINISHED"}
-        ):
-            self._ack_from_media_stop()
+        if not self.wake_check and self._playback_started:
+            self._end("finished")
             return
-
-        if state_str in {"IDLE", "PAUSED", "STOPPED"}:
-            self._media_stop_ticks += 1
-            if self._media_stop_ticks >= self.media_stop_ticks_required:
-                self._ack_from_media_stop()
+        if not self.player.ensure_connected():
             return
-        self._media_stop_ticks = 0
-
-        if self._settle_tick:
-            self._settle_tick = False
-            self._volume_ack_ticks = 0
-            return
-
-        volume = self._caster.get_volume()
-        if volume < 0:
-            # Volume unknown (not yet connected / transient read failure):
-            # never treat this as a user volume change.
-            self._volume_ack_ticks = 0
-            return
-        diff = abs(volume - self.ring_volume)
-
-        if self.volume_ack_enabled:
-            if diff > self.volume_ack_epsilon:
-                self._volume_ack_ticks += 1
-                if self._volume_ack_ticks >= self.volume_ack_ticks_required:
-                    if self.wake_check:
-                        self._caster.stop()
-                        self._enter_ack_grace()
-                    else:
-                        self._end("ack")
-            else:
-                self._volume_ack_ticks = 0
-        elif diff > self.volume_ack_epsilon:
-            self._set_target_volume()
-
-    def _ack_from_media_stop(self) -> None:
-        if self.wake_check:
-            self._caster.stop()
-            self._enter_ack_grace()
-        else:
-            self._end("ack")
+        self._playback_started = self.player.play(
+            self.sound_url,
+            self.ring_volume,
+            loop=self.wake_check,
+        )
 
     async def _tick_ack_grace(self) -> None:
         in_bed = None
@@ -244,7 +156,6 @@ class RingSession:
 
         if self.grace_start is None:
             self.grace_start = datetime.now()
-
         if (datetime.now() - self.grace_start).total_seconds() >= self.grace_sec:
             if in_bed is not False:
                 self._enter_ringing()
@@ -276,8 +187,6 @@ class RingSession:
         self.out_start = None
         self.continuous_out_sec = 0.0
         self._continuous_none_sec = 0.0
-        self._volume_ack_ticks = 0
-        self._media_stop_ticks = 0
         self._recast()
 
     def _enter_ack_grace(self) -> None:
@@ -286,8 +195,6 @@ class RingSession:
         self.out_start = None
         self.continuous_out_sec = 0.0
         self._continuous_none_sec = 0.0
-        self._volume_ack_ticks = 0
-        self._media_stop_ticks = 0
 
     def _enter_out(self) -> None:
         self.state = "OUT"
@@ -295,19 +202,17 @@ class RingSession:
         self.grace_start = None
         self.continuous_out_sec = 0.0
         self._continuous_none_sec = 0.0
-        self._volume_ack_ticks = 0
-        self._media_stop_ticks = 0
-
-    def _set_target_volume(self) -> None:
-        self._caster.set_volume(self.ring_volume)
-        self._settle_tick = True
 
     def _recast(self) -> None:
         if self.sound_urls:
             self.sound_url = random.choice(self.sound_urls)
-        self._seen_playing = False
-        self._set_target_volume()
-        self._caster.play(self.sound_url, guess_audio_mime(self.sound_url))
+        self._playback_started = False
+        if self.player.ensure_connected():
+            self._playback_started = self.player.play(
+                self.sound_url,
+                self.ring_volume,
+                loop=self.wake_check,
+            )
 
     def _end(self, reason: str) -> None:
         self.ended_reason = reason
@@ -338,12 +243,7 @@ class RingSession:
         }
 
 
-async def start_session(
-    alarm_id: int,
-    sound_url: str | list[str],
-    device_name: str,
-    settings: dict[str, Any],
-) -> dict[str, Any]:
+async def start_session(alarm_id: int, sound_url: str | list[str], device_name: str, settings: dict[str, Any]) -> dict[str, Any]:
     global current_session
     async with _session_lock:
         if current_session is not None and current_session.ended_reason is None:
@@ -355,8 +255,6 @@ async def start_session(
 
 
 def snooze_session() -> bool:
-    """Web button action: silence + keep monitoring (no full dismiss for
-    wake-check sessions). See RingSession.request_snooze."""
     if current_session is None:
         return False
     current_session.request_snooze()
@@ -364,8 +262,6 @@ def snooze_session() -> bool:
 
 
 def stop_session() -> bool:
-    """Hard stop — ends the session regardless of wake-check (used internally,
-    e.g. when an alarm is deleted)."""
     if current_session is None:
         return False
     current_session.manual_stop()

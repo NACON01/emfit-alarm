@@ -56,35 +56,19 @@
             <label class="switch-row">
               <span class="field-copy">
                 <span>emfit センサー 有効</span>
-                <span class="field-help">オンで睡眠センサーの在床/離床を使い「ベッドから出るまで鳴らし続ける」。オフは普通の目覚まし（音だけ）。</span>
+                <span class="field-help">オンで在床・離床を監視し、起床確認まで再鳴動します。</span>
               </span>
               <span class="switch"><input id="setting-emfit-enabled" type="checkbox"><span class="slider"></span></span>
             </label>
             <label>
-              <span>起床確定(連続離床) <small>分</small></span>
+              <span>起床確定（連続離床・分）</span>
               <input id="setting-awake-confirm-sec" type="number" min="0" step="1">
-              <span class="field-help">ベッドから出た状態がこの分数続いたら『起床』と判定して終了。短いと二度寝しやすい。例:3分</span>
+              <span class="field-help">ベッドから連続して離れている時間です。既定値は3分。</span>
             </label>
             <label>
-              <span>センサー無応答→再鳴動(秒)</span>
+              <span>センサー無応答→再鳴動（秒）</span>
               <input id="setting-none-continue-sec" type="number" min="0" step="1">
-              <span class="field-help">センサーが応答しない状態がこの秒数続いたら安全のため再び鳴らす（寝過ごし防止）。例:60秒</span>
-            </label>
-          </div>
-
-          <div class="settings-group">
-            <h2>アラーム動作</h2>
-            <label class="switch-row">
-              <span class="field-copy">
-                <span>音量変更/本体停止で一時停止</span>
-                <span class="field-help">オンで、本体タップ等で音量を変える、または本体長押し等で再生を止めると一時停止(スヌーズ)して監視継続。オフは音量を戻して鳴らし続ける。</span>
-              </span>
-              <span class="switch"><input id="setting-volume-ack-enabled" type="checkbox"><span class="slider"></span></span>
-            </label>
-            <label class="range-label">
-              <span>音量変化の感度(閾値) <output id="setting-epsilon-output">0.10</output></span>
-              <input id="setting-volume-ack-epsilon" type="range" min="0.01" max="0.5" step="0.01">
-              <span class="field-help">どれだけ音量が変われば「触った」と判定するか。小さいほど敏感。例:0.05〜0.1</span>
+              <span class="field-help">センサーが一時的に応答しない場合の再鳴動までの時間です。</span>
             </label>
             <label>
               <span>猶予時間(秒)</span>
@@ -113,7 +97,12 @@
             <label>
               <span>デフォルトデバイス</span>
               <input id="setting-default-devices" type="text">
-              <span class="field-help">新規アラームの対象スピーカー名（カンマ区切り）。例:ぬま</span>
+              <span class="field-help">新規アラームの対象スピーカー名（カンマ区切り）。例:Miku-Miku Echo</span>
+            </label>
+            <label>
+              <span>EchoのBluetooth MAC</span>
+              <input id="setting-bt-mac" type="text" placeholder="AA:BB:CC:DD:EE:FF">
+              <span class="field-help">bluetoothctlで確認したEchoのMACアドレス</span>
             </label>
             <label>
               <span>フォールバック音源URL</span>

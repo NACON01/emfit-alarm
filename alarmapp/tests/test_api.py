@@ -48,7 +48,7 @@ async def test_api_smoke(tmp_path, monkeypatch):
             sound_type="upload",
             sound_ref="alarm_long.mp3",
             volume=0.8,
-            devices=["ぬま"],
+            devices=["Miku-Miku Echo"],
             wake_check=True,
         )
     )
@@ -77,7 +77,7 @@ async def test_api_smoke(tmp_path, monkeypatch):
     settings = await alarm_app.api_get_settings()
     assert isinstance(settings, dict)
 
-    updated_settings = await alarm_app.api_update_settings({"ring_volume": 0.35, "default_devices": ["ぬま"]})
+    updated_settings = await alarm_app.api_update_settings({"ring_volume": 0.35, "default_devices": ["Miku-Miku Echo"]})
     assert updated_settings["ring_volume"] == 0.35
 
     deleted = await alarm_app.api_delete_alarm(alarm_id)

@@ -12,15 +12,14 @@ DB_PATH = BASE_DIR / "alarm.db"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "emfit_enabled": True,
-    "volume_ack_enabled": True,
     "awake_confirm_sec": 180,
     "grace_sec": 120,
     "poll_sec": 5,
     "ring_volume": 1.0,
-    "volume_ack_epsilon": 0.05,
     "none_continue_sec": 60,
     "max_session_sec": 1800,
-    "default_devices": ["ぬま"],
+    "default_devices": ["Miku-Miku Echo"],
+    "bt_mac": "",
     "fallback_url": "",
 }
 
@@ -217,7 +216,8 @@ def get_settings() -> dict[str, Any]:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
     settings = DEFAULT_SETTINGS.copy()
     for row in rows:
-        settings[row["key"]] = _decode_setting(row["value"])
+        if row["key"] in DEFAULT_SETTINGS:
+            settings[row["key"]] = _decode_setting(row["value"])
     return settings
 
 
@@ -230,7 +230,7 @@ def update_settings(values: dict[str, Any]) -> dict[str, Any]:
             VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            [(key, _encode_setting(value)) for key, value in values.items()],
+            [(key, _encode_setting(value)) for key, value in values.items() if key in DEFAULT_SETTINGS],
         )
         conn.commit()
     return get_settings()
