@@ -17,6 +17,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "poll_sec": 5,
     "ring_volume": 1.0,
     "none_continue_sec": 60,
+    "initial_ring_sec": 90,
     "max_session_sec": 1800,
     "default_devices": ["Miku-Miku Echo"],
     "bt_mac": "",

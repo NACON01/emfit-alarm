@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import player
@@ -49,3 +50,50 @@ def test_ensure_connected_checks_and_caches(monkeypatch):
     assert alarm_player.ensure_connected() is True
     assert alarm_player.ensure_connected() is True
     assert calls == [["bluetoothctl", "info", "AA:BB:CC:DD:EE:FF"]]
+def test_stream_active_matches_mpv_pid_and_caches(monkeypatch):
+    class FakeProcess:
+        pid = 4321
+        def poll(self): return None
+
+    pw_calls = []
+    payload = [{"type": "PipeWire:Interface:Node", "info": {"props": {"application.process.id": "4321"}}}]
+    monkeypatch.setattr(player.subprocess, "Popen", lambda args: FakeProcess())
+    monkeypatch.setattr(
+        player.subprocess,
+        "run",
+        lambda args, **kwargs: pw_calls.append(args) or SimpleNamespace(returncode=0, stdout=json.dumps(payload)),
+    )
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "")
+    alarm_player.play("/sounds/alarm.mp3", 1.0)
+
+    assert alarm_player.stream_active() is True
+    assert alarm_player.stream_active() is True
+    assert pw_calls == [["pw-dump"]]
+
+
+def test_stream_active_returns_unknown_on_pw_dump_failure(monkeypatch):
+    monkeypatch.setattr(
+        player.subprocess,
+        "run",
+        lambda args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("pw-dump")),
+    )
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "")
+
+    assert alarm_player.stream_active() is None
+
+
+def test_reconnect_cycles_bluetooth_connection(monkeypatch):
+    calls = []
+    monkeypatch.setattr(player.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        player.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0, stdout=""),
+    )
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "AA:BB:CC:DD:EE:FF")
+
+    assert alarm_player.reconnect() is True
+    assert calls == [
+        ["bluetoothctl", "disconnect", "AA:BB:CC:DD:EE:FF"],
+        ["bluetoothctl", "connect", "AA:BB:CC:DD:EE:FF"],
+    ]

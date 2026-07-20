@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import time
@@ -11,6 +12,8 @@ from db import get_settings
 LOGGER = logging.getLogger(__name__)
 _BT_TIMEOUT_SEC = 10
 _BT_RECHECK_SEC = 3
+_PW_DUMP_TIMEOUT_SEC = 5
+_PW_STREAM_CACHE_SEC = 5
 
 
 class BtPlayer:
@@ -23,6 +26,9 @@ class BtPlayer:
         self._last_connected_check = 0.0
         self._connected = not bool(self.bt_mac)
         self._next_volume = 1.0
+        self._stream_cache_at = 0.0
+        self._stream_cache_value: bool | None = None
+        self._stream_cache_valid = False
 
     def _bluetoothctl(self, *args: str) -> subprocess.CompletedProcess[str] | None:
         try:
@@ -33,7 +39,7 @@ class BtPlayer:
                 timeout=_BT_TIMEOUT_SEC,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except Exception as exc:
             LOGGER.warning("bluetoothctl %s failed: %s", " ".join(args), exc)
             return None
 
@@ -61,8 +67,29 @@ class BtPlayer:
             LOGGER.warning("Bluetooth speaker did not report connected: %s", self.bt_mac)
         return self._connected
 
+    def reconnect(self) -> bool:
+        """Cycle the configured Bluetooth connection before a new session."""
+        self._last_connected_check = 0.0
+        self._connected = not bool(self.bt_mac)
+        self._stream_cache_at = 0.0
+        self._stream_cache_value = None
+        self._stream_cache_valid = False
+        if not self.bt_mac:
+            LOGGER.info("Bluetooth reconnect skipped: no MAC configured")
+            return True
+
+        self._bluetoothctl("disconnect", self.bt_mac)
+        time.sleep(2)
+        connected = self._bluetoothctl("connect", self.bt_mac)
+        time.sleep(2)
+        ok = connected is not None and connected.returncode == 0
+        LOGGER.info("Bluetooth reconnect %s: %s", "succeeded" if ok else "failed", self.bt_mac)
+        return ok
     def play(self, path: str, volume: float, loop: bool = True) -> bool:
         self.stop()
+        self._stream_cache_at = 0.0
+        self._stream_cache_value = None
+        self._stream_cache_valid = False
         level = max(0, min(100, round(float(volume) * 100)))
         command = ["mpv", "--no-video", "--really-quiet"]
         if loop:
@@ -80,6 +107,55 @@ class BtPlayer:
     def is_playing(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
+    def stream_active(self) -> bool | None:
+        """Return whether mpv has a node in PipeWire, or None if unknown."""
+        now = time.monotonic()
+        if self._stream_cache_valid and now - self._stream_cache_at < _PW_STREAM_CACHE_SEC:
+            return self._stream_cache_value
+
+        process = self._process
+        pid = getattr(process, "pid", None) if process is not None else None
+        try:
+            result = subprocess.run(
+                ["pw-dump"],
+                capture_output=True,
+                text=True,
+                timeout=_PW_DUMP_TIMEOUT_SEC,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise subprocess.SubprocessError(f"pw-dump exited with {result.returncode}")
+            objects = json.loads(result.stdout or "")
+            if not isinstance(objects, list):
+                raise ValueError("pw-dump output was not a list")
+        except (OSError, subprocess.SubprocessError, TimeoutError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            LOGGER.warning("PipeWire stream check failed: %s", exc)
+            value = None
+        else:
+            value = False
+            for obj in objects:
+                if not isinstance(obj, dict):
+                    continue
+                info = obj.get("info")
+                props = info.get("props") if isinstance(info, dict) else None
+                if not isinstance(props, dict):
+                    continue
+                process_id = props.get("application.process.id")
+                same_pid = False
+                if pid is not None and process_id is not None:
+                    try:
+                        same_pid = int(process_id) == int(pid)
+                    except (TypeError, ValueError):
+                        same_pid = str(process_id) == str(pid)
+                application_name = str(props.get("application.name") or "").lower()
+                if same_pid or "mpv" in application_name:
+                    value = True
+                    break
+
+        self._stream_cache_at = now
+        self._stream_cache_value = value
+        self._stream_cache_valid = True
+        return value
     def stop(self) -> bool:
         process = self._process
         self._process = None

@@ -66,11 +66,13 @@ class RingSession:
         self.awake_confirm_sec = max(0.01, _as_float(self.settings.get("awake_confirm_sec"), 180.0))
         self.grace_sec = max(0.01, _as_float(self.settings.get("grace_sec"), 120.0))
         self.none_continue_sec = max(0.01, _as_float(self.settings.get("none_continue_sec"), 60.0))
+        self.initial_ring_sec = max(0.0, _as_float(self.settings.get("initial_ring_sec"), 90.0))
         self.max_session_sec = max(0.01, _as_float(self.settings.get("max_session_sec"), 1800.0))
         self.wake_check = _as_bool(self.settings.get("wake_check"), True)
         self.emfit_enabled = _as_bool(self.settings.get("emfit_enabled"), True) and self.wake_check
         self.player = player.BtPlayer(device_name, str(self.settings.get("bt_mac") or ""))
         self._playback_started = False
+        self._stream_inactive_checks = 0
 
     def request_snooze(self) -> None:
         """Silence the alarm temporarily while continuing bed monitoring."""
@@ -80,11 +82,21 @@ class RingSession:
         self._hard_stop = True
 
     async def start(self) -> None:
-        LOGGER.info("starting ring session alarm=%s device=%s", self.alarm_id, self.device_name)
-        if self.emfit_enabled and emfit.cached_in_bed() is False:
-            self._enter_out()
-        else:
-            self._recast()
+        initial_in_bed = emfit.cached_in_bed() if self.emfit_enabled else None
+        LOGGER.info(
+            "session start alarm=%s device=%s initial_in_bed=%s sound_path=%s",
+            self.alarm_id,
+            self.device_name,
+            initial_in_bed,
+            self.sound_url,
+        )
+        try:
+            reconnect_ok = await asyncio.to_thread(self.player.reconnect)
+        except Exception as exc:
+            reconnect_ok = False
+            LOGGER.warning("Bluetooth reconnect raised alarm=%s: %s", self.alarm_id, exc)
+        LOGGER.info("Bluetooth reconnect result alarm=%s ok=%s", self.alarm_id, reconnect_ok)
+        self._recast()
         try:
             while self.ended_reason is None:
                 await self._tick()
@@ -110,7 +122,7 @@ class RingSession:
             self._snooze_requested = False
             self.player.stop()
             if self.wake_check and self.emfit_enabled:
-                self._enter_ack_grace()
+                self._enter_ack_grace("web_snooze")
             else:
                 self._end("manual")
             return
@@ -128,13 +140,36 @@ class RingSession:
             self._end("error")
 
     async def _tick_ringing(self) -> None:
-        if self.emfit_enabled and emfit.cached_in_bed() is False:
+        in_bed = emfit.cached_in_bed() if self.emfit_enabled else None
+        if self.emfit_enabled and in_bed is False and self._elapsed_sec() >= self.initial_ring_sec:
             self.player.stop()
-            self._enter_out()
+            self._enter_out("sensor_out_after_initial_ring")
             return
 
         if self.player.is_playing():
+            stream_active = self.player.stream_active()
+            if stream_active is False:
+                self._stream_inactive_checks += 1
+                if self._stream_inactive_checks >= 2:
+                    LOGGER.warning(
+                        "watchdog restarting playback alarm=%s path=%s inactive_checks=%s",
+                        self.alarm_id,
+                        self.sound_url,
+                        self._stream_inactive_checks,
+                    )
+                    self.player.stop()
+                    restarted = self.player.play(
+                        self.sound_url,
+                        self.ring_volume,
+                        loop=self.wake_check,
+                    )
+                    LOGGER.info("watchdog restart result alarm=%s restarted=%s", self.alarm_id, restarted)
+                    self._stream_inactive_checks = 0
+                return
+            self._stream_inactive_checks = 0
             return
+
+        self._stream_inactive_checks = 0
         if not self.wake_check and self._playback_started:
             self._end("finished")
             return
@@ -151,14 +186,14 @@ class RingSession:
         if self.emfit_enabled:
             in_bed = emfit.cached_in_bed()
             if in_bed is False:
-                self._enter_out()
+                self._enter_out("sensor_out_during_ack_grace")
                 return
 
         if self.grace_start is None:
             self.grace_start = datetime.now()
         if (datetime.now() - self.grace_start).total_seconds() >= self.grace_sec:
             if in_bed is not False:
-                self._enter_ringing()
+                self._enter_ringing("sensor_in_bed_after_grace")
 
     async def _tick_out(self) -> None:
         if not self.emfit_enabled:
@@ -167,7 +202,7 @@ class RingSession:
 
         in_bed = emfit.cached_in_bed()
         if in_bed is True:
-            self._enter_ringing()
+            self._enter_ringing("sensor_in_bed")
             return
         if in_bed is False:
             self.continuous_out_sec += self.tick_sec
@@ -179,25 +214,38 @@ class RingSession:
         self._continuous_none_sec += self.tick_sec
         self.continuous_out_sec = 0.0
         if self._continuous_none_sec >= self.none_continue_sec:
-            self._enter_ringing()
+            self._enter_ringing("sensor_in_bed")
 
-    def _enter_ringing(self) -> None:
-        self.state = "RINGING"
+    def _set_state(self, state: str, reason: str) -> None:
+        previous = self.state
+        self.state = state
+        if previous != state:
+            LOGGER.info(
+                "state transition alarm=%s %s->%s reason=%s",
+                self.alarm_id,
+                previous,
+                state,
+                reason,
+            )
+
+    def _enter_ringing(self, reason: str = "sensor_in_bed") -> None:
+        self._set_state("RINGING", reason)
         self.grace_start = None
         self.out_start = None
         self.continuous_out_sec = 0.0
         self._continuous_none_sec = 0.0
+        self._stream_inactive_checks = 0
         self._recast()
 
-    def _enter_ack_grace(self) -> None:
-        self.state = "ACK_GRACE"
+    def _enter_ack_grace(self, reason: str = "web_snooze") -> None:
+        self._set_state("ACK_GRACE", reason)
         self.grace_start = datetime.now()
         self.out_start = None
         self.continuous_out_sec = 0.0
         self._continuous_none_sec = 0.0
 
-    def _enter_out(self) -> None:
-        self.state = "OUT"
+    def _enter_out(self, reason: str = "sensor_out") -> None:
+        self._set_state("OUT", reason)
         self.out_start = datetime.now()
         self.grace_start = None
         self.continuous_out_sec = 0.0
@@ -207,6 +255,7 @@ class RingSession:
         if self.sound_urls:
             self.sound_url = random.choice(self.sound_urls)
         self._playback_started = False
+        self._stream_inactive_checks = 0
         if self.player.ensure_connected():
             self._playback_started = self.player.play(
                 self.sound_url,
@@ -216,7 +265,9 @@ class RingSession:
 
     def _end(self, reason: str) -> None:
         self.ended_reason = reason
+        previous = self.state
         self.state = "ENDED"
+        LOGGER.info("session end alarm=%s reason=%s state=%s->ENDED", self.alarm_id, reason, previous)
 
     def _elapsed_sec(self) -> float:
         return (datetime.now() - self.session_start).total_seconds()

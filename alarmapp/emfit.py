@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -18,6 +19,7 @@ LOGGER = logging.getLogger(__name__)
 STATUS_URL = "http://127.0.0.1:8001/api/status"
 # The qs2 sidecar queries qs2.emfit.com live on each call (~4-5s), so allow ample time.
 EMFIT_TIMEOUT = 10
+EMFIT_STALE_SEC = 600
 
 last_status: dict[str, Any] = {
     "in_bed": None,
@@ -55,10 +57,21 @@ async def get_in_bed() -> bool | None:
         in_bed = data.get("in_bed")
         if not isinstance(in_bed, bool):
             raise ValueError("emfit response did not contain boolean in_bed")
+        label = data.get("bed_status_label")
+        last_seen = data.get("last_seen_timestamp")
+        stale_age_sec: float | None = None
+        if last_seen is not None:
+            try:
+                stale_age_sec = max(0.0, time.time() - float(last_seen) / 1000.0)
+            except (TypeError, ValueError):
+                stale_age_sec = None
+        if stale_age_sec is not None and stale_age_sec > EMFIT_STALE_SEC:
+            in_bed = None
+            label = f"stale (last seen {stale_age_sec / 60:.0f}m ago)"
         last_status.update(
             {
                 "in_bed": in_bed,
-                "label": data.get("bed_status_label"),
+                "label": label,
                 "last_error": None,
             }
         )

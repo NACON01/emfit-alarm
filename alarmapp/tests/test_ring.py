@@ -19,8 +19,13 @@ class FakeBtPlayer:
         self.play_calls: list[tuple[str, float, bool]] = []
         self.stop_calls = 0
         self.ensure_calls = 0
+        self.reconnect_calls = 0
+        self.stream_value: bool | None = True
         FakeBtPlayer.instances.append(self)
 
+    def reconnect(self) -> bool:
+        self.reconnect_calls += 1
+        return True
     def ensure_connected(self) -> bool:
         self.ensure_calls += 1
         return True
@@ -30,6 +35,8 @@ class FakeBtPlayer:
         self.playing = True
         return True
 
+    def stream_active(self) -> bool | None:
+        return self.stream_value
     def is_playing(self) -> bool:
         return self.playing
 
@@ -86,14 +93,30 @@ async def set_in_bed(monkeypatch, values):
 
 
 @pytest.mark.asyncio
-async def test_start_out_of_bed_does_not_ring_and_confirms_woke(monkeypatch):
+async def test_start_out_of_bed_still_rings_before_initial_window(monkeypatch):
     await set_in_bed(monkeypatch, [False, False, False, False, False])
-    alarm = session(emfit_enabled=True, awake_confirm_sec=0.1, tick_sec=0.02)
+    alarm = session(emfit_enabled=True, initial_ring_sec=90, max_session_sec=1800)
+    fake = FakeBtPlayer.instances[-1]
+
+    await alarm._tick()
+
+    assert alarm.state == "RINGING"
+    assert fake.play_calls
+
+    alarm.session_start = datetime.now() - timedelta(seconds=91)
+    await alarm._tick()
+
+    assert alarm.state == "OUT"
+
+@pytest.mark.asyncio
+async def test_start_out_of_bed_confirms_woke_after_initial_window(monkeypatch):
+    await set_in_bed(monkeypatch, [False, False, False, False, False])
+    alarm = session(emfit_enabled=True, initial_ring_sec=0, awake_confirm_sec=0.1, tick_sec=0.02)
 
     await alarm.start()
 
     assert alarm.ended_reason == "woke"
-    assert FakeBtPlayer.instances[-1].play_calls == []
+    assert FakeBtPlayer.instances[-1].play_calls
 
 
 @pytest.mark.asyncio
@@ -111,9 +134,33 @@ async def test_playback_stopped_while_in_bed_restarts():
 
 
 @pytest.mark.asyncio
+async def test_watchdog_restarts_after_two_inactive_stream_checks():
+    alarm = session(emfit_enabled=False)
+    fake = FakeBtPlayer.instances[-1]
+    alarm._recast()
+    fake.stream_value = False
+
+    await alarm._tick()
+    await alarm._tick()
+
+    assert len(fake.play_calls) == 2
+    assert alarm._playback_started is True
+
+@pytest.mark.asyncio
+async def test_watchdog_does_not_restart_on_unknown_stream():
+    alarm = session(emfit_enabled=False)
+    fake = FakeBtPlayer.instances[-1]
+    alarm._recast()
+    fake.stream_value = None
+
+    await alarm._tick()
+    await alarm._tick()
+
+    assert len(fake.play_calls) == 1
+@pytest.mark.asyncio
 async def test_out_of_bed_stops_playback_and_enters_out(monkeypatch):
     await set_in_bed(monkeypatch, [False])
-    alarm = session(emfit_enabled=True)
+    alarm = session(emfit_enabled=True, initial_ring_sec=0)
     fake = FakeBtPlayer.instances[-1]
 
     await alarm._tick()
@@ -125,7 +172,7 @@ async def test_out_of_bed_stops_playback_and_enters_out(monkeypatch):
 @pytest.mark.asyncio
 async def test_return_to_bed_re_rings(monkeypatch):
     await set_in_bed(monkeypatch, [False, True])
-    alarm = session(emfit_enabled=True)
+    alarm = session(emfit_enabled=True, initial_ring_sec=0)
     fake = FakeBtPlayer.instances[-1]
     alarm._recast()
 
@@ -140,7 +187,7 @@ async def test_return_to_bed_re_rings(monkeypatch):
 @pytest.mark.asyncio
 async def test_out_of_bed_sustained_ends_woke(monkeypatch):
     await set_in_bed(monkeypatch, [False, False, False, False, False])
-    alarm = session(emfit_enabled=True)
+    alarm = session(emfit_enabled=True, initial_ring_sec=0)
 
     await alarm._tick()
     for _ in range(4):
@@ -152,7 +199,7 @@ async def test_out_of_bed_sustained_ends_woke(monkeypatch):
 @pytest.mark.asyncio
 async def test_none_while_ringing_is_treated_as_in_bed(monkeypatch):
     await set_in_bed(monkeypatch, [None])
-    alarm = session(emfit_enabled=True)
+    alarm = session(emfit_enabled=True, initial_ring_sec=0)
 
     await alarm._tick()
 
@@ -163,7 +210,7 @@ async def test_none_while_ringing_is_treated_as_in_bed(monkeypatch):
 @pytest.mark.asyncio
 async def test_none_sustained_while_out_returns_to_ringing(monkeypatch):
     await set_in_bed(monkeypatch, [False, None, None])
-    alarm = session(emfit_enabled=True)
+    alarm = session(emfit_enabled=True, initial_ring_sec=0)
 
     await alarm._tick()
     await alarm._tick()
@@ -176,7 +223,7 @@ async def test_none_sustained_while_out_returns_to_ringing(monkeypatch):
 @pytest.mark.asyncio
 async def test_web_snooze_enters_grace_then_re_rings_when_still_in_bed(monkeypatch):
     await set_in_bed(monkeypatch, [True, True])
-    alarm = session(emfit_enabled=True)
+    alarm = session(emfit_enabled=True, initial_ring_sec=0)
     fake = FakeBtPlayer.instances[-1]
     alarm._recast()
     alarm.request_snooze()

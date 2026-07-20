@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -38,6 +39,13 @@ DOWNLOAD_FRAGMENT_RE = re.compile(r"\((?P<fragment>frag\s+[^)]+)\)")
 YOUTUBE_JOBS: dict[str, dict[str, Any]] = {}
 YOUTUBE_JOBS_LOCK = threading.Lock()
 YOUTUBE_JOB_TTL_SEC = 3600
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    if not root.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        )
 
 
 try:
@@ -452,7 +460,7 @@ def download_youtube_audio(
 
 
 TEST_RING_SECONDS = 20
-REAL_TEST_MAX_SECONDS = 120
+REAL_TEST_MAX_SECONDS = 300
 
 
 def _build_test_ring(mode: str = "sound") -> tuple[str, str, dict[str, Any]]:
@@ -547,6 +555,7 @@ if FASTAPI_AVAILABLE:
 
     @app.on_event("startup")
     async def startup() -> None:
+        _configure_logging()
         init_db()
         SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
         asyncio.create_task(scheduler_loop())
@@ -802,6 +811,7 @@ else:
                     return
 
         def _ensure_started(self) -> None:
+            _configure_logging()
             if self.started:
                 return
             init_db()
