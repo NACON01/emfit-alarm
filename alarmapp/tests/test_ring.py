@@ -20,8 +20,14 @@ class FakeBtPlayer:
         self.stop_calls = 0
         self.ensure_calls = 0
         self.reconnect_calls = 0
+        self.restart_calls = 0
+        self.restart_result = True
         self.stream_value: bool | None = True
         FakeBtPlayer.instances.append(self)
+
+    def restart_bt_stack(self) -> bool:
+        self.restart_calls += 1
+        return self.restart_result
 
     def reconnect(self) -> bool:
         self.reconnect_calls += 1
@@ -67,6 +73,7 @@ def settings(**overrides):
         "wake_check": True,
         "emfit_enabled": False,
         "bt_mac": "",
+        "bt_stack_restart": True,
     }
     data.update(overrides)
     return data
@@ -90,6 +97,57 @@ async def set_in_bed(monkeypatch, values):
         return values[-1] if values else None
 
     monkeypatch.setattr(emfit, "cached_in_bed", fake_cached_in_bed)
+
+
+@pytest.mark.asyncio
+async def test_bt_stack_restart_runs_before_reconnect(monkeypatch):
+    alarm = session(bt_mac="AA:BB:CC:DD:EE:FF", max_session_sec=5)
+    fake = FakeBtPlayer.instances[-1]
+    calls = []
+    fake.restart_bt_stack = lambda: calls.append("restart") or True
+    fake.reconnect = lambda: calls.append("reconnect") or True
+
+    async def stop_after_first_tick(_seconds):
+        alarm.manual_stop()
+
+    monkeypatch.setattr(ring.asyncio, "sleep", stop_after_first_tick)
+    await alarm.start()
+
+    assert calls == ["restart", "reconnect"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restart_enabled, bt_mac", [(False, "AA:BB:CC:DD:EE:FF"), (True, "")])
+async def test_bt_stack_restart_is_skipped_when_disabled_or_unconfigured(
+    restart_enabled, bt_mac, monkeypatch
+):
+    alarm = session(bt_mac=bt_mac, bt_stack_restart=restart_enabled, max_session_sec=5)
+    fake = FakeBtPlayer.instances[-1]
+
+    async def stop_after_first_tick(_seconds):
+        alarm.manual_stop()
+
+    monkeypatch.setattr(ring.asyncio, "sleep", stop_after_first_tick)
+    await alarm.start()
+
+    assert fake.restart_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_ringing_continues_when_bt_stack_restart_fails(monkeypatch):
+    alarm = session(bt_mac="AA:BB:CC:DD:EE:FF", max_session_sec=5)
+    fake = FakeBtPlayer.instances[-1]
+    fake.restart_result = False
+
+    async def stop_after_first_tick(_seconds):
+        alarm.manual_stop()
+
+    monkeypatch.setattr(ring.asyncio, "sleep", stop_after_first_tick)
+    await alarm.start()
+
+    assert fake.restart_calls == 1
+    assert fake.reconnect_calls == 1
+    assert fake.play_calls
 
 
 @pytest.mark.asyncio
@@ -141,10 +199,29 @@ async def test_watchdog_restarts_after_two_inactive_stream_checks():
     fake.stream_value = False
 
     await alarm._tick()
+    assert alarm._stream_inactive_checks == 1
     await alarm._tick()
 
     assert len(fake.play_calls) == 2
     assert alarm._playback_started is True
+    assert alarm._stream_inactive_checks == 0
+
+
+@pytest.mark.asyncio
+async def test_playback_replay_resets_inactive_counter():
+    alarm = session(emfit_enabled=False)
+    fake = FakeBtPlayer.instances[-1]
+    alarm._recast()
+    fake.stream_value = False
+
+    await alarm._tick()
+    assert alarm._stream_inactive_checks == 1
+    fake.playing = False
+    await alarm._tick()
+
+    assert len(fake.play_calls) == 2
+    assert alarm._stream_inactive_checks == 0
+
 
 @pytest.mark.asyncio
 async def test_watchdog_does_not_restart_on_unknown_stream():

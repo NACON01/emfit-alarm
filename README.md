@@ -49,6 +49,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now emfit-qs2.service alarm-web.service
 ```
 
+The alarm restarts the Bluetooth stack at the start of each configured Bluetooth session. The deploy setup must install this sudoers drop-in:
+
+```text
+okazaki ALL=(root) NOPASSWD: /usr/bin/systemctl restart bluetooth
+```
+
 `deploy/emfit.env` は次の形式のローカルファイルにします（値は環境ごとの実値を入力してください）。
 
 ```text

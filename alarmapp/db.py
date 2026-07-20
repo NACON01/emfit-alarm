@@ -21,6 +21,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_session_sec": 1800,
     "default_devices": ["Miku-Miku Echo"],
     "bt_mac": "",
+    "bt_stack_restart": True,
     "fallback_url": "",
 }
 

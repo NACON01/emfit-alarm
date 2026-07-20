@@ -65,10 +65,22 @@ def test_stream_active_matches_mpv_pid_and_caches(monkeypatch):
     )
     alarm_player = player.BtPlayer("Miku-Miku Echo", "")
     alarm_player.play("/sounds/alarm.mp3", 1.0)
+    alarm_player._play_started_ts -= player._PW_STREAM_START_GRACE_SEC
 
     assert alarm_player.stream_active() is True
     assert alarm_player.stream_active() is True
     assert pw_calls == [["pw-dump"]]
+
+
+def test_stream_active_returns_unknown_during_start_grace(monkeypatch):
+    pw_calls = []
+    monkeypatch.setattr(player.subprocess, "Popen", lambda args: SimpleNamespace(pid=4321, poll=lambda: None))
+    monkeypatch.setattr(player.subprocess, "run", lambda args, **kwargs: pw_calls.append(args))
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "")
+
+    assert alarm_player.play("/sounds/alarm.mp3", 1.0) is True
+    assert alarm_player.stream_active() is None
+    assert pw_calls == []
 
 
 def test_stream_active_returns_unknown_on_pw_dump_failure(monkeypatch):
@@ -80,6 +92,38 @@ def test_stream_active_returns_unknown_on_pw_dump_failure(monkeypatch):
     alarm_player = player.BtPlayer("Miku-Miku Echo", "")
 
     assert alarm_player.stream_active() is None
+
+
+def test_restart_bt_stack_resets_connection_state(monkeypatch):
+    calls = []
+    sleeps = []
+    monkeypatch.setattr(player.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        player.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append((args, kwargs)) or SimpleNamespace(returncode=0, stderr=""),
+    )
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "AA:BB:CC:DD:EE:FF")
+    alarm_player._last_connected_check = 123.0
+    alarm_player._connected = True
+
+    assert alarm_player.restart_bt_stack() is True
+    assert calls[0][0] == ["sudo", "-n", "systemctl", "restart", "bluetooth"]
+    assert calls[0][1]["timeout"] == 20
+    assert sleeps == [3]
+    assert alarm_player._last_connected_check == 0.0
+    assert alarm_player._connected is False
+
+
+def test_restart_bt_stack_failure_is_nonfatal(monkeypatch):
+    monkeypatch.setattr(
+        player.subprocess,
+        "run",
+        lambda args, **kwargs: SimpleNamespace(returncode=1, stderr="not permitted"),
+    )
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "AA:BB:CC:DD:EE:FF")
+
+    assert alarm_player.restart_bt_stack() is False
 
 
 def test_reconnect_cycles_bluetooth_connection(monkeypatch):

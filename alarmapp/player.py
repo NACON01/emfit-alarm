@@ -12,8 +12,11 @@ from db import get_settings
 LOGGER = logging.getLogger(__name__)
 _BT_TIMEOUT_SEC = 10
 _BT_RECHECK_SEC = 3
+_BT_STACK_RESTART_TIMEOUT_SEC = 20
+_BT_STACK_RESTART_WAIT_SEC = 3
 _PW_DUMP_TIMEOUT_SEC = 5
 _PW_STREAM_CACHE_SEC = 5
+_PW_STREAM_START_GRACE_SEC = 10
 
 
 class BtPlayer:
@@ -29,6 +32,43 @@ class BtPlayer:
         self._stream_cache_at = 0.0
         self._stream_cache_value: bool | None = None
         self._stream_cache_valid = False
+        self._play_started_ts: float | None = None
+
+    def _reset_connection_state(self) -> None:
+        self._last_connected_check = 0.0
+        self._connected = not bool(self.bt_mac)
+
+    def restart_bt_stack(self) -> bool:
+        """Restart the system Bluetooth service before starting a ring session."""
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "systemctl", "restart", "bluetooth"],
+                capture_output=True,
+                text=True,
+                timeout=_BT_STACK_RESTART_TIMEOUT_SEC,
+                check=False,
+            )
+            if result.returncode != 0:
+                LOGGER.warning(
+                    "Bluetooth stack restart failed: returncode=%s stderr=%s",
+                    result.returncode,
+                    (getattr(result, "stderr", "") or "").strip(),
+                )
+                return False
+        except Exception as exc:
+            LOGGER.warning("Bluetooth stack restart failed: %s", exc)
+            return False
+
+        self._reset_connection_state()
+        self._stream_cache_at = 0.0
+        self._stream_cache_value = None
+        self._stream_cache_valid = False
+        try:
+            time.sleep(_BT_STACK_RESTART_WAIT_SEC)
+        except Exception as exc:
+            LOGGER.warning("Bluetooth stack restart wait failed: %s", exc)
+        LOGGER.info("Bluetooth stack restart succeeded")
+        return True
 
     def _bluetoothctl(self, *args: str) -> subprocess.CompletedProcess[str] | None:
         try:
@@ -69,8 +109,7 @@ class BtPlayer:
 
     def reconnect(self) -> bool:
         """Cycle the configured Bluetooth connection before a new session."""
-        self._last_connected_check = 0.0
-        self._connected = not bool(self.bt_mac)
+        self._reset_connection_state()
         self._stream_cache_at = 0.0
         self._stream_cache_value = None
         self._stream_cache_valid = False
@@ -85,8 +124,10 @@ class BtPlayer:
         ok = connected is not None and connected.returncode == 0
         LOGGER.info("Bluetooth reconnect %s: %s", "succeeded" if ok else "failed", self.bt_mac)
         return ok
+
     def play(self, path: str, volume: float, loop: bool = True) -> bool:
         self.stop()
+        self._play_started_ts = None
         self._stream_cache_at = 0.0
         self._stream_cache_value = None
         self._stream_cache_valid = False
@@ -97,6 +138,7 @@ class BtPlayer:
         command.extend([f"--volume={level}", str(path)])
         try:
             self._process = subprocess.Popen(command)
+            self._play_started_ts = time.monotonic()
             self._next_volume = max(0.0, min(1.0, float(volume)))
             return True
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -110,6 +152,8 @@ class BtPlayer:
     def stream_active(self) -> bool | None:
         """Return whether mpv has a node in PipeWire, or None if unknown."""
         now = time.monotonic()
+        if self._play_started_ts is None or now - self._play_started_ts < _PW_STREAM_START_GRACE_SEC:
+            return None
         if self._stream_cache_valid and now - self._stream_cache_at < _PW_STREAM_CACHE_SEC:
             return self._stream_cache_value
 

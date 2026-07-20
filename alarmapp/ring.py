@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from datetime import datetime
 from typing import Any
 
@@ -73,6 +74,7 @@ class RingSession:
         self.player = player.BtPlayer(device_name, str(self.settings.get("bt_mac") or ""))
         self._playback_started = False
         self._stream_inactive_checks = 0
+        self._last_plain_replay_log_ts: float | None = None
 
     def request_snooze(self) -> None:
         """Silence the alarm temporarily while continuing bed monitoring."""
@@ -91,6 +93,13 @@ class RingSession:
             self.sound_url,
         )
         try:
+            if _as_bool(self.settings.get("bt_stack_restart"), True) and self.player.bt_mac:
+                try:
+                    restart_ok = await asyncio.to_thread(self.player.restart_bt_stack)
+                except Exception as exc:
+                    restart_ok = False
+                    LOGGER.warning("Bluetooth stack restart raised alarm=%s: %s", self.alarm_id, exc)
+                LOGGER.info("Bluetooth stack restart result alarm=%s ok=%s", self.alarm_id, restart_ok)
             reconnect_ok = await asyncio.to_thread(self.player.reconnect)
         except Exception as exc:
             reconnect_ok = False
@@ -158,7 +167,7 @@ class RingSession:
                         self._stream_inactive_checks,
                     )
                     self.player.stop()
-                    restarted = self.player.play(
+                    restarted = self._play(
                         self.sound_url,
                         self.ring_volume,
                         loop=self.wake_check,
@@ -173,9 +182,19 @@ class RingSession:
         if not self.wake_check and self._playback_started:
             self._end("finished")
             return
-        if not self.player.ensure_connected():
+        connected = self.player.ensure_connected()
+        now = time.monotonic()
+        if self._last_plain_replay_log_ts is None or now - self._last_plain_replay_log_ts >= 5:
+            LOGGER.info(
+                "plain playback replay alarm=%s path=%s ensure_connected=%s",
+                self.alarm_id,
+                self.sound_url,
+                connected,
+            )
+            self._last_plain_replay_log_ts = now
+        if not connected:
             return
-        self._playback_started = self.player.play(
+        self._playback_started = self._play(
             self.sound_url,
             self.ring_volume,
             loop=self.wake_check,
@@ -257,11 +276,15 @@ class RingSession:
         self._playback_started = False
         self._stream_inactive_checks = 0
         if self.player.ensure_connected():
-            self._playback_started = self.player.play(
+            self._playback_started = self._play(
                 self.sound_url,
                 self.ring_volume,
                 loop=self.wake_check,
             )
+
+    def _play(self, path: str, volume: float, loop: bool = True) -> bool:
+        self._stream_inactive_checks = 0
+        return self.player.play(path, volume, loop=loop)
 
     def _end(self, reason: str) -> None:
         self.ended_reason = reason
