@@ -50,6 +50,56 @@ def test_ensure_connected_checks_and_caches(monkeypatch):
     assert alarm_player.ensure_connected() is True
     assert alarm_player.ensure_connected() is True
     assert calls == [["bluetoothctl", "info", "AA:BB:CC:DD:EE:FF"]]
+
+
+def test_ensure_connected_powers_adapter_before_retry(monkeypatch):
+    calls = []
+    results = iter([
+        SimpleNamespace(returncode=0, stdout="Connected: no", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="not ready"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=0, stdout="Connected: yes", stderr=""),
+    ])
+    monkeypatch.setattr(
+        player.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append((args, kwargs)) or next(results),
+    )
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "AA:BB:CC:DD:EE:FF")
+
+    assert alarm_player.ensure_connected() is True
+    assert [call[0] for call in calls] == [
+        ["bluetoothctl", "info", "AA:BB:CC:DD:EE:FF"],
+        ["bluetoothctl", "connect", "AA:BB:CC:DD:EE:FF"],
+        ["bluetoothctl", "power", "on"],
+        ["bluetoothctl", "connect", "AA:BB:CC:DD:EE:FF"],
+        ["bluetoothctl", "info", "AA:BB:CC:DD:EE:FF"],
+    ]
+    assert calls[2][1]["timeout"] == 5
+
+
+def test_ensure_connected_power_on_is_rate_limited(monkeypatch):
+    times = iter([100.0, 100.0, 104.0, 104.0, 131.0, 131.0])
+    power_calls = []
+    monkeypatch.setattr(player.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(player, "_BT_RECHECK_SEC", 3)
+    monkeypatch.setattr(player.BtPlayer, "_bluetoothctl", lambda self, *args: None)
+    monkeypatch.setattr(
+        player.subprocess,
+        "run",
+        lambda args, **kwargs: power_calls.append((args, kwargs)) or SimpleNamespace(returncode=0, stderr=""),
+    )
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "AA:BB:CC:DD:EE:FF")
+
+    assert alarm_player.ensure_connected() is False
+    assert alarm_player.ensure_connected() is False
+    assert alarm_player.ensure_connected() is False
+    assert [call[0] for call in power_calls] == [
+        ["bluetoothctl", "power", "on"],
+        ["bluetoothctl", "power", "on"],
+    ]
+
 def test_stream_active_matches_mpv_pid_and_caches(monkeypatch):
     class FakeProcess:
         pid = 4321
@@ -94,7 +144,7 @@ def test_stream_active_returns_unknown_on_pw_dump_failure(monkeypatch):
     assert alarm_player.stream_active() is None
 
 
-def test_restart_bt_stack_resets_connection_state(monkeypatch):
+def test_restart_bt_stack_uses_helper_first(monkeypatch):
     calls = []
     sleeps = []
     monkeypatch.setattr(player.time, "sleep", lambda seconds: sleeps.append(seconds))
@@ -108,12 +158,59 @@ def test_restart_bt_stack_resets_connection_state(monkeypatch):
     alarm_player._connected = True
 
     assert alarm_player.restart_bt_stack() is True
-    assert calls[0][0] == ["sudo", "-n", "systemctl", "restart", "bluetooth"]
-    assert calls[0][1]["timeout"] == 20
+    assert calls[0][0] == ["sudo", "-n", "/usr/local/sbin/alarm-bt-reset"]
+    assert calls[0][1]["timeout"] == 30
     assert sleeps == [3]
     assert alarm_player._last_connected_check == 0.0
     assert alarm_player._connected is False
 
+
+def test_restart_bt_stack_falls_back_to_systemctl(monkeypatch):
+    calls = []
+    results = iter([
+        SimpleNamespace(returncode=1, stderr="helper failed"),
+        SimpleNamespace(returncode=0, stderr=""),
+    ])
+    monkeypatch.setattr(
+        player.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append((args, kwargs)) or next(results),
+    )
+    monkeypatch.setattr(player.time, "sleep", lambda seconds: None)
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "AA:BB:CC:DD:EE:FF")
+
+    assert alarm_player.restart_bt_stack() is True
+    assert [call[0] for call in calls] == [
+        ["sudo", "-n", "/usr/local/sbin/alarm-bt-reset"],
+        ["sudo", "-n", "systemctl", "restart", "bluetooth"],
+    ]
+    assert calls[0][1]["timeout"] == 30
+    assert calls[1][1]["timeout"] == 20
+
+
+def test_restart_bt_stack_missing_helper_falls_back(monkeypatch):
+    calls = []
+    results = iter([
+        FileNotFoundError("alarm-bt-reset"),
+        SimpleNamespace(returncode=0, stderr=""),
+    ])
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        result = next(results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(player.subprocess, "run", fake_run)
+    monkeypatch.setattr(player.time, "sleep", lambda seconds: None)
+    alarm_player = player.BtPlayer("Miku-Miku Echo", "AA:BB:CC:DD:EE:FF")
+
+    assert alarm_player.restart_bt_stack() is True
+    assert calls == [
+        ["sudo", "-n", "/usr/local/sbin/alarm-bt-reset"],
+        ["sudo", "-n", "systemctl", "restart", "bluetooth"],
+    ]
 
 def test_restart_bt_stack_failure_is_nonfatal(monkeypatch):
     monkeypatch.setattr(

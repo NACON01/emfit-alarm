@@ -11,8 +11,11 @@ from db import get_settings
 
 LOGGER = logging.getLogger(__name__)
 _BT_TIMEOUT_SEC = 10
+_BT_POWER_ON_TIMEOUT_SEC = 5
+_BT_POWER_ON_RETRY_INTERVAL_SEC = 30
 _BT_RECHECK_SEC = 3
 _BT_STACK_RESTART_TIMEOUT_SEC = 20
+_BT_STACK_RESET_TIMEOUT_SEC = 30
 _BT_STACK_RESTART_WAIT_SEC = 3
 _PW_DUMP_TIMEOUT_SEC = 5
 _PW_STREAM_CACHE_SEC = 5
@@ -27,6 +30,7 @@ class BtPlayer:
         self.bt_mac = str(bt_mac or "").strip()
         self._process: subprocess.Popen[Any] | None = None
         self._last_connected_check = 0.0
+        self._last_power_on_at: float | None = None
         self._connected = not bool(self.bt_mac)
         self._next_volume = 1.0
         self._stream_cache_at = 0.0
@@ -40,24 +44,44 @@ class BtPlayer:
 
     def restart_bt_stack(self) -> bool:
         """Restart the system Bluetooth service before starting a ring session."""
+        helper_ok = False
         try:
             result = subprocess.run(
-                ["sudo", "-n", "systemctl", "restart", "bluetooth"],
+                ["sudo", "-n", "/usr/local/sbin/alarm-bt-reset"],
                 capture_output=True,
                 text=True,
-                timeout=_BT_STACK_RESTART_TIMEOUT_SEC,
+                timeout=_BT_STACK_RESET_TIMEOUT_SEC,
                 check=False,
             )
-            if result.returncode != 0:
+            helper_ok = result.returncode == 0
+            if not helper_ok:
                 LOGGER.warning(
-                    "Bluetooth stack restart failed: returncode=%s stderr=%s",
+                    "Bluetooth reset helper failed: returncode=%s stderr=%s; falling back to systemctl",
                     result.returncode,
                     (getattr(result, "stderr", "") or "").strip(),
                 )
-                return False
         except Exception as exc:
-            LOGGER.warning("Bluetooth stack restart failed: %s", exc)
-            return False
+            LOGGER.warning("Bluetooth reset helper failed: %s; falling back to systemctl", exc)
+
+        if not helper_ok:
+            try:
+                result = subprocess.run(
+                    ["sudo", "-n", "systemctl", "restart", "bluetooth"],
+                    capture_output=True,
+                    text=True,
+                    timeout=_BT_STACK_RESTART_TIMEOUT_SEC,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    LOGGER.warning(
+                        "Bluetooth stack restart failed: returncode=%s stderr=%s",
+                        result.returncode,
+                        (getattr(result, "stderr", "") or "").strip(),
+                    )
+                    return False
+            except Exception as exc:
+                LOGGER.warning("Bluetooth stack restart failed: %s", exc)
+                return False
 
         self._reset_connection_state()
         self._stream_cache_at = 0.0
@@ -83,6 +107,43 @@ class BtPlayer:
             LOGGER.warning("bluetoothctl %s failed: %s", " ".join(args), exc)
             return None
 
+    def _power_on_adapter(self) -> bool:
+        """Try to clear an adapter-not-ready failure before reconnecting."""
+        now = time.monotonic()
+        if (
+            self._last_power_on_at is not None
+            and now - self._last_power_on_at < _BT_POWER_ON_RETRY_INTERVAL_SEC
+        ):
+            return False
+        self._last_power_on_at = now
+        try:
+            result = subprocess.run(
+                ["bluetoothctl", "power", "on"],
+                capture_output=True,
+                text=True,
+                timeout=_BT_POWER_ON_TIMEOUT_SEC,
+                check=False,
+            )
+            if result.returncode != 0:
+                LOGGER.warning(
+                    "Bluetooth adapter power-on failed: returncode=%s stderr=%s",
+                    result.returncode,
+                    (getattr(result, "stderr", "") or "").strip(),
+                )
+                return False
+        except Exception as exc:
+            LOGGER.warning("Bluetooth adapter power-on failed: %s", exc)
+            return False
+        LOGGER.info("Bluetooth adapter powered on")
+        return True
+
+    def _connect_and_verify(self) -> bool:
+        connected = self._bluetoothctl("connect", self.bt_mac)
+        if connected is None or connected.returncode != 0:
+            return False
+        verify = self._bluetoothctl("info", self.bt_mac)
+        return bool(verify is not None and "Connected: yes" in (verify.stdout or ""))
+
     def ensure_connected(self) -> bool:
         if not self.bt_mac:
             return True
@@ -97,12 +158,11 @@ class BtPlayer:
             return True
 
         self._connected = False
-        connected = self._bluetoothctl("connect", self.bt_mac)
-        if connected is None or connected.returncode != 0:
-            LOGGER.warning("Bluetooth speaker connection failed: %s", self.bt_mac)
-            return False
-        verify = self._bluetoothctl("info", self.bt_mac)
-        self._connected = bool(verify is not None and "Connected: yes" in (verify.stdout or ""))
+        self._connected = self._connect_and_verify()
+        if not self._connected:
+            LOGGER.warning("Bluetooth speaker connection failed; powering adapter before retry: %s", self.bt_mac)
+            self._power_on_adapter()
+            self._connected = self._connect_and_verify()
         if not self._connected:
             LOGGER.warning("Bluetooth speaker did not report connected: %s", self.bt_mac)
         return self._connected
