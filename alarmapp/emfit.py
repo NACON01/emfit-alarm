@@ -19,7 +19,7 @@ LOGGER = logging.getLogger(__name__)
 STATUS_URL = "http://127.0.0.1:8001/api/status"
 # The qs2 sidecar queries qs2.emfit.com live on each call (~4-5s), so allow ample time.
 EMFIT_TIMEOUT = 10
-EMFIT_STALE_SEC = 600
+EMFIT_STALE_SEC = 1800
 
 last_status: dict[str, Any] = {
     "in_bed": None,
