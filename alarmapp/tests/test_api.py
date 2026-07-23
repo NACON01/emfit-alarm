@@ -54,6 +54,26 @@ async def test_api_smoke(tmp_path, monkeypatch):
     )
     alarm_id = created["id"]
 
+    anti_doze = await alarm_app.api_create_alarm(
+        alarm_app.AlarmCreate(
+            alarm_kind="anti_doze",
+            label="No dozing",
+            time="01:00",
+            monitor_start="18:00",
+            reentry_block_min=90,
+            repeat_days=[0, 1],
+            enabled=True,
+            sound_type="upload",
+            sound_ref="alarm_long.mp3",
+            volume=0.8,
+            devices=["Miku-Miku Echo"],
+            wake_check=True,
+        )
+    )
+    assert anti_doze["alarm_kind"] == "anti_doze"
+    assert anti_doze["monitor_start"] == "18:00"
+    assert anti_doze["reentry_block_min"] == 90
+
     imported = await alarm_app.api_download_youtube_sound(
         alarm_app.YouTubeDownload(url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", filename="wake-song")
     )
@@ -82,6 +102,7 @@ async def test_api_smoke(tmp_path, monkeypatch):
 
     deleted = await alarm_app.api_delete_alarm(alarm_id)
     assert deleted == {"ok": True}
+    assert await alarm_app.api_delete_alarm(anti_doze["id"]) == {"ok": True}
 
 
 async def _to_thread_now(func, *args, **kwargs):

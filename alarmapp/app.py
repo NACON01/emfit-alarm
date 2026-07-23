@@ -19,6 +19,7 @@ from urllib.parse import quote, unquote, urlparse
 import player
 import emfit
 import ring
+import anti_doze
 from db import create_alarm, delete_alarm, get_all_alarms, get_alarm, get_settings, init_db, update_alarm, update_settings
 from scheduler import get_next_alarm, scheduler_loop
 
@@ -89,6 +90,9 @@ def _bool_int(value: Any) -> int:
 def public_alarm(alarm: dict[str, Any]) -> dict[str, Any]:
     return {
         **alarm,
+        "alarm_kind": alarm.get("alarm_kind") or "wake",
+        "monitor_start": alarm.get("monitor_start"),
+        "reentry_block_min": int(alarm.get("reentry_block_min") or 0),
         "enabled": bool(alarm.get("enabled")),
         "wake_check": bool(alarm.get("wake_check")),
         "repeat_days": _json_list(alarm.get("repeat_days"), []),
@@ -501,6 +505,7 @@ def _status_payload() -> dict[str, Any]:
         **status,
         "emfit": emfit.last_status.copy(),
         "next_alarm": get_next_alarm(),
+        "anti_doze": anti_doze.get_status(),
     }
 
 
@@ -515,8 +520,11 @@ async def emfit_poller() -> None:
 if FASTAPI_AVAILABLE:
 
     class AlarmCreate(BaseModel):
+        alarm_kind: str = "wake"
         label: str = "Alarm"
         time: str
+        monitor_start: str | None = None
+        reentry_block_min: int = Field(default=0, ge=0, le=720)
         repeat_days: list[int] = Field(default_factory=list)
         enabled: bool = True
         sound_type: str = "upload"
@@ -527,8 +535,11 @@ if FASTAPI_AVAILABLE:
 
 
     class AlarmUpdate(BaseModel):
+        alarm_kind: str | None = None
         label: str | None = None
         time: str | None = None
+        monitor_start: str | None = None
+        reentry_block_min: int | None = Field(default=None, ge=0, le=720)
         repeat_days: list[int] | None = None
         enabled: bool | None = None
         sound_type: str | None = None
@@ -560,6 +571,7 @@ if FASTAPI_AVAILABLE:
         SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
         asyncio.create_task(scheduler_loop())
         asyncio.create_task(emfit_poller())
+        asyncio.create_task(anti_doze.anti_doze_loop())
 
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -578,13 +590,19 @@ if FASTAPI_AVAILABLE:
 
     @app.post("/api/alarms")
     async def api_create_alarm(payload: AlarmCreate) -> dict[str, Any]:
-        alarm = create_alarm(**_model_payload(payload))
+        try:
+            alarm = create_alarm(**_model_payload(payload))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return public_alarm(alarm)
 
 
     @app.put("/api/alarms/{alarm_id}")
     async def api_update_alarm(alarm_id: int, payload: AlarmUpdate) -> dict[str, Any]:
-        alarm = update_alarm(alarm_id, **_model_payload(payload, exclude_unset=True))
+        try:
+            alarm = update_alarm(alarm_id, **_model_payload(payload, exclude_unset=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if alarm is None:
             raise HTTPException(status_code=404, detail="alarm not found")
         return public_alarm(alarm)
@@ -746,14 +764,18 @@ else:
 
     class AlarmCreate(_CompatModel):
         _defaults = {
-            "label": "Alarm", "time": "07:00", "repeat_days": [], "enabled": True,
+            "alarm_kind": "wake", "label": "Alarm", "time": "07:00",
+            "monitor_start": None, "reentry_block_min": 0,
+            "repeat_days": [], "enabled": True,
             "sound_type": "upload", "sound_ref": "alarm_long.mp3", "volume": 1.0,
             "devices": ["Miku-Miku Echo"], "wake_check": True,
         }
 
     class AlarmUpdate(_CompatModel):
         _defaults = {
-            "label": None, "time": None, "repeat_days": None, "enabled": None,
+            "alarm_kind": None, "label": None, "time": None,
+            "monitor_start": None, "reentry_block_min": None,
+            "repeat_days": None, "enabled": None,
             "sound_type": None, "sound_ref": None, "volume": None, "devices": None,
             "wake_check": None, "last_fired_date": None,
         }
@@ -820,6 +842,7 @@ else:
                 loop = asyncio.get_running_loop()
                 loop.create_task(scheduler_loop())
                 loop.create_task(emfit_poller())
+                loop.create_task(anti_doze.anti_doze_loop())
             except RuntimeError:
                 pass
             self.started = True
@@ -911,6 +934,8 @@ else:
                     await self._json(send, {"ok": stopped, **ring.get_status()})
                 else:
                     await self._json(send, {"detail": "not found"}, status=404)
+            except ValueError as exc:
+                await self._json(send, {"detail": str(exc)}, status=400)
             except Exception as exc:
                 await self._json(send, {"detail": str(exc)}, status=500)
 

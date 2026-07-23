@@ -51,6 +51,8 @@ class RingSession:
         self.sound_url = self.sound_urls[0] if self.sound_urls else ""
         self.device_name = device_name
         self.settings = settings_dict.copy()
+        self.session_kind = str(self.settings.get("session_kind") or "wake")
+        self.session_label = str(self.settings.get("session_label") or "Alarm")
         self.state = "RINGING"
         self.ended_reason: str | None = None
         self.session_start = datetime.now()
@@ -307,6 +309,8 @@ class RingSession:
         return {
             "state": self.state,
             "alarm_id": self.alarm_id,
+            "session_kind": self.session_kind,
+            "session_label": self.session_label,
             "device_name": self.device_name,
             "session_start": self.session_start.isoformat(timespec="seconds"),
             "session_elapsed": session_elapsed,
@@ -347,6 +351,8 @@ def get_status() -> dict[str, Any]:
         return {
             "state": "IDLE",
             "alarm_id": None,
+            "session_kind": None,
+            "session_label": None,
             "device_name": None,
             "session_start": None,
             "session_elapsed": 0,

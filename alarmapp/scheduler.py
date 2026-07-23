@@ -77,6 +77,8 @@ def _settings_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> dict
     if alarm.get("volume") is not None:
         session_settings["ring_volume"] = float(alarm["volume"])
     session_settings["wake_check"] = bool(alarm.get("wake_check", 1))
+    session_settings["session_kind"] = str(alarm.get("alarm_kind") or "wake")
+    session_settings["session_label"] = str(alarm.get("label") or "Alarm")
     return session_settings
 
 
@@ -93,7 +95,7 @@ async def scheduler_loop() -> None:
         today_str = now.strftime("%Y-%m-%d")
 
         for alarm in alarms:
-            if not alarm.get("enabled"):
+            if not alarm.get("enabled") or (alarm.get("alarm_kind") or "wake") != "wake":
                 continue
             try:
                 hour, minute = [int(part) for part in str(alarm.get("time") or "").split(":", 1)]
@@ -131,7 +133,11 @@ async def scheduler_loop() -> None:
 
 
 def get_next_alarm() -> dict[str, Any] | None:
-    alarms = [alarm for alarm in get_all_alarms() if alarm.get("enabled")]
+    alarms = [
+        alarm
+        for alarm in get_all_alarms()
+        if alarm.get("enabled") and (alarm.get("alarm_kind") or "wake") == "wake"
+    ]
     if not alarms:
         return None
 

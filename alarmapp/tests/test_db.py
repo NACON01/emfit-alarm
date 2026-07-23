@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import db
 
 
@@ -52,3 +54,35 @@ def test_alarm_crud_and_settings_round_trip(tmp_path, monkeypatch):
 
     assert db.delete_alarm(created["id"]) is True
     assert db.get_alarm(created["id"]) is None
+
+
+def test_init_db_migrates_existing_alarm_table(tmp_path, monkeypatch):
+    db_path = tmp_path / "alarm.db"
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE alarms (
+                id INTEGER PRIMARY KEY,
+                label TEXT,
+                time TEXT,
+                repeat_days TEXT,
+                enabled INTEGER,
+                sound_type TEXT,
+                sound_ref TEXT,
+                volume REAL,
+                devices TEXT,
+                wake_check INTEGER,
+                last_fired_date TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        conn.execute("INSERT INTO alarms(id, label, time) VALUES(1, 'Legacy', '07:00')")
+
+    db.init_db()
+    alarm = db.get_alarm(1)
+
+    assert alarm["alarm_kind"] == "wake"
+    assert alarm["monitor_start"] is None
+    assert alarm["reentry_block_min"] == 0

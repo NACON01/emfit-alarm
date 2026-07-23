@@ -76,7 +76,13 @@
     saveAlarm: $("save-alarm"),
     modalTitle: $("modal-title"),
     alarmId: $("alarm-id"),
+    alarmKind: $("alarm-kind"),
     alarmTime: $("alarm-time"),
+    alarmTimeLabel: $("alarm-time-label"),
+    alarmMonitorStart: $("alarm-monitor-start"),
+    alarmReentryBlockMin: $("alarm-reentry-block-min"),
+    antiDozeTimeFields: $("anti-doze-time-fields"),
+    antiDozeOptions: $("anti-doze-options"),
     alarmLabel: $("alarm-label"),
     alarmEnabled: $("alarm-enabled"),
     alarmWakeCheck: $("alarm-wake-check"),
@@ -240,8 +246,15 @@
   function updateStatus(status) {
     const state = status.state || "IDLE";
     const alarm = status.next_alarm;
+    const antiDoze = status.anti_doze || {};
     updateSensorPill(status.emfit);
-    if (alarm) {
+    if (antiDoze.state === "COUNTING" && antiDoze.remaining_sec != null) {
+      els.nextAlarmPill.textContent = `寝落ち防止まで ${formatDuration(antiDoze.remaining_sec)}`;
+      els.nextAlarmPill.title = antiDoze.label || "寝落ち防止アラーム";
+    } else if (antiDoze.state === "COOLDOWN" && antiDoze.cooldown_remaining_sec != null) {
+      els.nextAlarmPill.textContent = `再横臥禁止 あと ${formatDuration(antiDoze.cooldown_remaining_sec)}`;
+      els.nextAlarmPill.title = "この間に横になると即座にアラームが鳴ります";
+    } else if (alarm) {
       els.nextAlarmPill.textContent = `次のアラームまで ${formatDuration(alarm.seconds_until)}`;
       els.nextAlarmPill.title = `${alarm.time} ${alarm.label || ""}`.trim();
     } else {
@@ -291,7 +304,11 @@
       OUT: "離床を確認中：このまま起きていれば終了します",
     };
     els.ringingTitle.textContent = stateTitles[state] || state;
-    els.ringingLabel.textContent = endedText[status.ended_reason] || ringingLabels[state] || (alarm ? `${alarm.time} ${alarm.label || ""}`.trim() : "アラーム");
+    const sessionPrefix = status.session_kind === "anti_doze" ? "寝落ち防止：" : "";
+    els.ringingLabel.textContent = endedText[status.ended_reason]
+      || (ringingLabels[state] ? `${sessionPrefix}${ringingLabels[state]}` : "")
+      || status.session_label
+      || (alarm ? `${alarm.time} ${alarm.label || ""}`.trim() : "アラーム");
     els.ringingMeta.textContent = parts.join(" · ");
     els.ringingPanel.classList.remove("hidden");
   }
@@ -1172,11 +1189,20 @@
       content.className = "alarm-content";
       const time = document.createElement("div");
       time.className = "alarm-time";
-      time.textContent = alarm.time || "--:--";
+      const antiDoze = alarm.alarm_kind === "anti_doze";
+      time.textContent = antiDoze
+        ? `${alarm.monitor_start || "--:--"} → ${alarm.time || "--:--"}`
+        : alarm.time || "--:--";
       const label = document.createElement("div");
       label.className = "alarm-label";
       label.textContent = alarm.label || "Alarm";
       content.append(time, label);
+      if (antiDoze) {
+        const kind = document.createElement("span");
+        kind.className = "kind-mini";
+        kind.textContent = `寝落ち防止 · 再横臥禁止 ${Number(alarm.reentry_block_min) || 0}分`;
+        content.appendChild(kind);
+      }
 
       const toggleLabel = document.createElement("label");
       toggleLabel.className = "switch";
@@ -1822,15 +1848,29 @@
     els.formError.classList.toggle("visible", Boolean(message));
   }
 
+  function updateAlarmKindFields() {
+    const antiDoze = els.alarmKind.value === "anti_doze";
+    els.antiDozeTimeFields.classList.toggle("hidden", !antiDoze);
+    els.antiDozeOptions.classList.toggle("hidden", !antiDoze);
+    els.alarmTimeLabel.textContent = antiDoze ? "就寝してよい時刻" : "時刻";
+    els.alarmMonitorStart.required = antiDoze;
+    els.alarmWakeCheck.disabled = antiDoze;
+    if (antiDoze) els.alarmWakeCheck.checked = true;
+  }
+
   async function openAlarmModal(alarm) {
     const editing = Boolean(alarm && alarm.id);
     showFormError("");
     els.modalTitle.textContent = editing ? "アラーム編集" : "アラーム追加";
     els.alarmId.value = editing ? alarm.id : "";
+    els.alarmKind.value = editing ? alarm.alarm_kind || "wake" : "wake";
     els.alarmTime.value = editing ? alarm.time || "07:00" : "07:00";
+    els.alarmMonitorStart.value = editing ? alarm.monitor_start || "18:00" : "18:00";
+    els.alarmReentryBlockMin.value = editing ? Number(alarm.reentry_block_min) || 0 : 0;
     els.alarmLabel.value = editing ? alarm.label || "" : "";
     els.alarmEnabled.checked = editing ? Boolean(alarm.enabled) : true;
     els.alarmWakeCheck.checked = editing ? Boolean(alarm.wake_check) : true;
+    updateAlarmKindFields();
     setDays(editing ? alarm.repeat_days || [] : []);
     els.volume.value = Math.round((editing ? Number(alarm.volume) || 1 : 1) * 100);
     updateVolumeOutput();
@@ -1912,13 +1952,33 @@
       els.alarmTime.focus();
       return;
     }
+    const antiDoze = els.alarmKind.value === "anti_doze";
+    if (antiDoze && !els.alarmMonitorStart.value) {
+      showFormError("監視開始時刻を入力してください。");
+      els.alarmMonitorStart.focus();
+      return;
+    }
+    if (antiDoze && els.alarmMonitorStart.value === els.alarmTime.value) {
+      showFormError("監視開始時刻と就寝してよい時刻は別の時刻にしてください。");
+      els.alarmMonitorStart.focus();
+      return;
+    }
+    const reentryBlockMin = Number(els.alarmReentryBlockMin.value);
+    if (antiDoze && (!Number.isInteger(reentryBlockMin) || reentryBlockMin < 0 || reentryBlockMin > 720)) {
+      showFormError("再横臥を禁止する時間は0～720分で入力してください。");
+      els.alarmReentryBlockMin.focus();
+      return;
+    }
 
     await withLoading(els.saveAlarm, async () => {
       try {
         const sound = await soundPayload();
         const payload = {
+          alarm_kind: els.alarmKind.value,
           label: els.alarmLabel.value.trim() || "Alarm",
           time: els.alarmTime.value,
+          monitor_start: antiDoze ? els.alarmMonitorStart.value : null,
+          reentry_block_min: antiDoze ? reentryBlockMin : 0,
           repeat_days: Array.from(selectedDays).sort((a, b) => a - b),
           enabled: els.alarmEnabled.checked,
           wake_check: els.alarmWakeCheck.checked,
@@ -2141,6 +2201,7 @@
       }
     });
     els.deleteAlarm.addEventListener("click", deleteAlarm);
+    els.alarmKind.addEventListener("change", updateAlarmKindFields);
     els.volume.addEventListener("input", updateVolumeOutput);
     els.settingsForm.addEventListener("submit", saveSettings);
     els.settings.ring_volume.addEventListener("input", updateSettingsOutputs);

@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Wake Alarm</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260703-preview-panel">
-    <script src="/static/app.js?v=20260703-preview-panel" defer></script>
+    <link rel="stylesheet" href="/static/style.css?v=20260723-anti-doze">
+    <script src="/static/app.js?v=20260723-anti-doze" defer></script>
   </head>
   <body>
     <header id="hero-header" class="hero-header">
@@ -192,11 +192,33 @@
 
           <div id="form-error" class="form-error" role="alert"></div>
 
-          <section class="form-section time-section" aria-label="時刻">
+          <section class="form-section time-section" aria-label="アラーム種別と時刻">
             <label>
-              <span class="section-label">時刻</span>
+              <span class="section-label">種類</span>
+              <select id="alarm-kind">
+                <option value="wake">通常の目覚まし</option>
+                <option value="anti_doze">寝落ち防止アラーム</option>
+              </select>
+            </label>
+            <div id="anti-doze-time-fields" class="anti-doze-fields hidden">
+              <label>
+                <span class="section-label">監視開始時刻</span>
+                <input id="alarm-monitor-start" type="time">
+              </label>
+              <div class="field-help">この時刻から「就寝してよい時刻」まで、ベッドへの入床を監視します。日付跨ぎにも対応します。</div>
+            </div>
+            <label>
+              <span id="alarm-time-label" class="section-label">時刻</span>
               <input id="alarm-time" class="time-input" type="time" required>
             </label>
+            <div id="anti-doze-options" class="anti-doze-fields hidden">
+              <div class="field-help">監視中に横になると20分後に鳴ります。20分前に離床した場合は最初から数え直します。</div>
+              <label>
+                <span>再横臥を禁止する時間（分）</span>
+                <input id="alarm-reentry-block-min" type="number" min="0" max="720" step="1" value="0">
+                <span class="field-help">アラーム後に離床が確認された時点から計測します。制限中に再び横になると即座に鳴ります。0分で無効。</span>
+              </label>
+            </div>
           </section>
 
           <section class="form-section" aria-label="基本設定">

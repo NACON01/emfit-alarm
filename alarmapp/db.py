@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -26,8 +27,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 ALARM_FIELDS = {
+    "alarm_kind",
     "label",
     "time",
+    "monitor_start",
+    "reentry_block_min",
     "repeat_days",
     "enabled",
     "sound_type",
@@ -37,6 +41,8 @@ ALARM_FIELDS = {
     "wake_check",
     "last_fired_date",
 }
+
+TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 def _connect() -> sqlite3.Connection:
@@ -79,14 +85,34 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row)
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+def _validate_alarm_values(values: dict[str, Any]) -> None:
+    if (values.get("alarm_kind") or "wake") != "anti_doze":
+        return
+    monitor_start = str(values.get("monitor_start") or "")
+    monitor_end = str(values.get("time") or "")
+    if not TIME_RE.fullmatch(monitor_start) or not TIME_RE.fullmatch(monitor_end):
+        raise ValueError("anti-doze monitoring times must use HH:MM")
+    if monitor_start == monitor_end:
+        raise ValueError("anti-doze monitoring start and end must differ")
+
+
 def init_db() -> None:
     with _connect() as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS alarms (
                 id INTEGER PRIMARY KEY,
+                alarm_kind TEXT NOT NULL DEFAULT 'wake',
                 label TEXT,
                 time TEXT,
+                monitor_start TEXT,
+                reentry_block_min INTEGER NOT NULL DEFAULT 0,
                 repeat_days TEXT,
                 enabled INTEGER,
                 sound_type TEXT,
@@ -99,11 +125,25 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_column(conn, "alarms", "alarm_kind", "TEXT NOT NULL DEFAULT 'wake'")
+        _ensure_column(conn, "alarms", "monitor_start", "TEXT")
+        _ensure_column(conn, "alarms", "reentry_block_min", "INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS anti_doze_runtime (
+                alarm_id INTEGER PRIMARY KEY,
+                phase TEXT NOT NULL,
+                in_bed_since TEXT,
+                cooldown_until TEXT,
+                updated_at TEXT NOT NULL
             )
             """
         )
@@ -132,8 +172,11 @@ def create_alarm(**kwargs: Any) -> dict[str, Any]:
     init_db()
     now = datetime.now().isoformat(timespec="seconds")
     values = {
+        "alarm_kind": kwargs.get("alarm_kind") if kwargs.get("alarm_kind") in {"wake", "anti_doze"} else "wake",
         "label": kwargs.get("label") or "Alarm",
         "time": kwargs.get("time") or "07:00",
+        "monitor_start": kwargs.get("monitor_start"),
+        "reentry_block_min": max(0, min(720, int(kwargs.get("reentry_block_min") or 0))),
         "repeat_days": _json_text(kwargs.get("repeat_days"), []),
         "enabled": int(bool(kwargs.get("enabled", True))),
         "sound_type": kwargs.get("sound_type") or "upload",
@@ -144,15 +187,18 @@ def create_alarm(**kwargs: Any) -> dict[str, Any]:
         "last_fired_date": kwargs.get("last_fired_date"),
         "created_at": now,
     }
+    _validate_alarm_values(values)
     with _connect() as conn:
         cur = conn.execute(
             """
             INSERT INTO alarms (
-                label, time, repeat_days, enabled, sound_type, sound_ref,
+                alarm_kind, label, time, monitor_start, reentry_block_min,
+                repeat_days, enabled, sound_type, sound_ref,
                 volume, devices, wake_check, last_fired_date, created_at
             )
             VALUES (
-                :label, :time, :repeat_days, :enabled, :sound_type, :sound_ref,
+                :alarm_kind, :label, :time, :monitor_start, :reentry_block_min,
+                :repeat_days, :enabled, :sound_type, :sound_ref,
                 :volume, :devices, :wake_check, :last_fired_date, :created_at
             )
             """,
@@ -168,6 +214,10 @@ def create_alarm(**kwargs: Any) -> dict[str, Any]:
 
 def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
     init_db()
+    current = get_alarm(alarm_id)
+    if current is None:
+        return None
+    _validate_alarm_values({**current, **kwargs})
     updates: dict[str, Any] = {}
     should_clear_fired_date = (
         "last_fired_date" not in kwargs
@@ -180,7 +230,9 @@ def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
     for key, value in kwargs.items():
         if key not in ALARM_FIELDS:
             continue
-        if key in {"repeat_days", "devices"}:
+        if key == "alarm_kind":
+            value = value if value in {"wake", "anti_doze"} else "wake"
+        elif key in {"repeat_days", "devices"}:
             value = _json_text(value, [])
         elif key == "sound_ref":
             value = _sound_ref_text(value)
@@ -188,6 +240,8 @@ def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
             value = int(bool(value))
         elif key == "volume" and value is not None:
             value = float(value)
+        elif key == "reentry_block_min" and value is not None:
+            value = max(0, min(720, int(value)))
         updates[key] = value
 
     if should_clear_fired_date:
@@ -200,6 +254,11 @@ def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
     updates["id"] = alarm_id
     with _connect() as conn:
         conn.execute(f"UPDATE alarms SET {assignments} WHERE id = :id", updates)
+        if any(
+            key in updates
+            for key in {"alarm_kind", "time", "monitor_start", "reentry_block_min", "repeat_days", "enabled"}
+        ):
+            conn.execute("DELETE FROM anti_doze_runtime WHERE alarm_id = :id", {"id": alarm_id})
         conn.commit()
     return get_alarm(alarm_id)
 
@@ -207,6 +266,7 @@ def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
 def delete_alarm(alarm_id: int) -> bool:
     init_db()
     with _connect() as conn:
+        conn.execute("DELETE FROM anti_doze_runtime WHERE alarm_id = ?", (alarm_id,))
         cur = conn.execute("DELETE FROM alarms WHERE id = ?", (alarm_id,))
         conn.commit()
         return cur.rowcount > 0
@@ -236,3 +296,52 @@ def update_settings(values: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
     return get_settings()
+
+
+def get_anti_doze_runtime(alarm_id: int) -> dict[str, Any] | None:
+    init_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM anti_doze_runtime WHERE alarm_id = ?",
+            (alarm_id,),
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def set_anti_doze_runtime(alarm_id: int, **values: Any) -> dict[str, Any]:
+    init_db()
+    current = get_anti_doze_runtime(alarm_id) or {}
+    now = datetime.now().isoformat(timespec="seconds")
+    state = {
+        "phase": str(values.get("phase", current.get("phase") or "COUNTING")),
+        "in_bed_since": values.get("in_bed_since", current.get("in_bed_since")),
+        "cooldown_until": values.get("cooldown_until", current.get("cooldown_until")),
+        "updated_at": now,
+    }
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO anti_doze_runtime(
+                alarm_id, phase, in_bed_since, cooldown_until, updated_at
+            )
+            VALUES(:alarm_id, :phase, :in_bed_since, :cooldown_until, :updated_at)
+            ON CONFLICT(alarm_id) DO UPDATE SET
+                phase = excluded.phase,
+                in_bed_since = excluded.in_bed_since,
+                cooldown_until = excluded.cooldown_until,
+                updated_at = excluded.updated_at
+            """,
+            {"alarm_id": alarm_id, **state},
+        )
+        conn.commit()
+    loaded = get_anti_doze_runtime(alarm_id)
+    if loaded is None:
+        raise RuntimeError("anti-doze runtime could not be loaded")
+    return loaded
+
+
+def clear_anti_doze_runtime(alarm_id: int) -> None:
+    init_db()
+    with _connect() as conn:
+        conn.execute("DELETE FROM anti_doze_runtime WHERE alarm_id = ?", (alarm_id,))
+        conn.commit()
