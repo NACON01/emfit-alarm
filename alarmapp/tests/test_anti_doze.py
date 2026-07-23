@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,6 +91,22 @@ async def test_custom_delay_starts_ring_at_configured_minute(monkeypatch):
     assert calls == []
 
     await anti_doze.tick(started + timedelta(minutes=10), True)
+    assert calls == [alarm["id"]]
+
+
+@pytest.mark.asyncio
+async def test_due_anti_doze_preempts_bed_entry_announcement(monkeypatch):
+    alarm = create_anti_doze()
+    ring.current_session = SimpleNamespace(session_kind="bed_entry_announcement")
+    calls = []
+
+    async def fake_start(alarm_id, _urls, _device, settings):
+        calls.append(alarm_id)
+        return {"alarm_id": alarm_id, "session_kind": settings["session_kind"]}
+
+    monkeypatch.setattr(anti_doze.ring, "start_session", fake_start)
+
+    assert await anti_doze._start_ring(alarm, db.get_settings(), "test") is True
     assert calls == [alarm["id"]]
 
 

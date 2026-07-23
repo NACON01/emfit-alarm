@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 import pytest
@@ -86,6 +87,14 @@ def session(**overrides):
 def random_session(**overrides):
     urls = ["C:/sounds/a.mp3", "C:/sounds/b.mp3"]
     return ring.RingSession(1, urls, "Miku-Miku Echo", settings(**overrides))
+
+
+async def wait_for_play(fake: FakeBtPlayer) -> None:
+    for _ in range(100):
+        if fake.play_calls:
+            return
+        await asyncio.sleep(0.001)
+    raise AssertionError("playback did not start")
 
 
 async def set_in_bed(monkeypatch, values):
@@ -368,3 +377,90 @@ def test_ring_session_accepts_random_sound_paths(monkeypatch):
 
     assert fake.play_calls[-1][0] == "C:/sounds/b.mp3"
     assert alarm.sound_url == "C:/sounds/b.mp3"
+
+
+@pytest.mark.asyncio
+async def test_bed_entry_announcement_uses_one_shot_without_reconnect():
+    status = await ring.start_announcement(
+        7,
+        "C:/assets/bed_entry_detected.wav",
+        "Miku-Miku Echo",
+        settings(emfit_enabled=True, wake_check=True),
+    )
+    announcement = ring.current_session
+    assert announcement is not None
+    fake = FakeBtPlayer.instances[-1]
+    await wait_for_play(fake)
+
+    assert status["session_kind"] == "bed_entry_announcement"
+    assert announcement.wake_check is False
+    assert announcement.emfit_enabled is False
+    assert fake.restart_calls == 0
+    assert fake.reconnect_calls == 0
+    assert fake.ensure_calls >= 1
+    assert fake.play_calls == [("C:/assets/bed_entry_detected.wav", 1.0, False)]
+
+    announcement.manual_stop()
+    await asyncio.wait_for(announcement._task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_real_alarm_preempts_bed_entry_announcement():
+    await ring.start_announcement(
+        7,
+        "C:/assets/bed_entry_detected.wav",
+        "Miku-Miku Echo",
+        settings(),
+    )
+    announcement = ring.current_session
+    assert announcement is not None
+    announcement_player = FakeBtPlayer.instances[-1]
+    await wait_for_play(announcement_player)
+
+    status = await ring.start_session(
+        8,
+        "C:/sounds/alarm.mp3",
+        "Miku-Miku Echo",
+        settings(session_kind="wake", session_label="Wake"),
+    )
+
+    assert announcement.ended_reason == "preempted"
+    assert announcement_player.stop_calls >= 1
+    assert status["alarm_id"] == 8
+    assert status["session_kind"] == "wake"
+    assert ring.current_session is not announcement
+
+    current = ring.current_session
+    assert current is not None
+    current.manual_stop()
+    await asyncio.wait_for(current._task, timeout=1)
+    await asyncio.wait_for(announcement._task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_immediate_alarm_preemption_prevents_late_announcement_playback():
+    await ring.start_announcement(
+        7,
+        "C:/assets/bed_entry_detected.wav",
+        "Miku-Miku Echo",
+        settings(),
+    )
+    announcement = ring.current_session
+    assert announcement is not None
+    announcement_player = FakeBtPlayer.instances[-1]
+
+    await ring.start_session(
+        8,
+        "C:/sounds/alarm.mp3",
+        "Miku-Miku Echo",
+        settings(session_kind="wake", session_label="Wake"),
+    )
+    await asyncio.wait_for(announcement._task, timeout=1)
+
+    assert announcement.ended_reason == "preempted"
+    assert announcement_player.play_calls == []
+
+    current = ring.current_session
+    assert current is not None
+    current.manual_stop()
+    await asyncio.wait_for(current._task, timeout=1)

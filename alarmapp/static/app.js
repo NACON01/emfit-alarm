@@ -305,9 +305,15 @@
       OUT: "離床を確認中：このまま起きていれば終了します",
     };
     els.ringingTitle.textContent = stateTitles[state] || state;
+    const isBedEntryAnnouncement = status.session_kind === "bed_entry_announcement";
     const sessionPrefix = status.session_kind === "anti_doze" ? "寝落ち防止：" : "";
+    const activeRingingLabel = isBedEntryAnnouncement
+      ? status.session_label || "入床を検知しました"
+      : ringingLabels[state]
+        ? `${sessionPrefix}${ringingLabels[state]}`
+        : "";
     els.ringingLabel.textContent = endedText[status.ended_reason]
-      || (ringingLabels[state] ? `${sessionPrefix}${ringingLabels[state]}` : "")
+      || activeRingingLabel
       || status.session_label
       || (alarm ? `${alarm.time} ${alarm.label || ""}`.trim() : "アラーム");
     els.ringingMeta.textContent = parts.join(" · ");

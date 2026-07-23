@@ -73,6 +73,7 @@ class RingSession:
         self.max_session_sec = max(0.01, _as_float(self.settings.get("max_session_sec"), 1800.0))
         self.wake_check = _as_bool(self.settings.get("wake_check"), True)
         self.emfit_enabled = _as_bool(self.settings.get("emfit_enabled"), True) and self.wake_check
+        self.reconnect_on_start = _as_bool(self.settings.get("reconnect_on_start"), True)
         self.player = player.BtPlayer(device_name, str(self.settings.get("bt_mac") or ""))
         self._playback_started = False
         self._stream_inactive_checks = 0
@@ -94,19 +95,31 @@ class RingSession:
             initial_in_bed,
             self.sound_url,
         )
+        if self.ended_reason is not None:
+            self.player.stop()
+            await self._clear_current()
+            return
         try:
-            if _as_bool(self.settings.get("bt_stack_restart"), True) and self.player.bt_mac:
-                try:
-                    restart_ok = await asyncio.to_thread(self.player.restart_bt_stack)
-                except Exception as exc:
-                    restart_ok = False
-                    LOGGER.warning("Bluetooth stack restart raised alarm=%s: %s", self.alarm_id, exc)
-                LOGGER.info("Bluetooth stack restart result alarm=%s ok=%s", self.alarm_id, restart_ok)
-            reconnect_ok = await asyncio.to_thread(self.player.reconnect)
+            if self.reconnect_on_start:
+                if _as_bool(self.settings.get("bt_stack_restart"), True) and self.player.bt_mac:
+                    try:
+                        restart_ok = await asyncio.to_thread(self.player.restart_bt_stack)
+                    except Exception as exc:
+                        restart_ok = False
+                        LOGGER.warning("Bluetooth stack restart raised alarm=%s: %s", self.alarm_id, exc)
+                    LOGGER.info("Bluetooth stack restart result alarm=%s ok=%s", self.alarm_id, restart_ok)
+                reconnect_ok = await asyncio.to_thread(self.player.reconnect)
+                LOGGER.info("Bluetooth reconnect result alarm=%s ok=%s", self.alarm_id, reconnect_ok)
+            else:
+                reconnect_ok = await asyncio.to_thread(self.player.ensure_connected)
+                LOGGER.info("Bluetooth connection check result alarm=%s ok=%s", self.alarm_id, reconnect_ok)
         except Exception as exc:
             reconnect_ok = False
-            LOGGER.warning("Bluetooth reconnect raised alarm=%s: %s", self.alarm_id, exc)
-        LOGGER.info("Bluetooth reconnect result alarm=%s ok=%s", self.alarm_id, reconnect_ok)
+            LOGGER.warning("Bluetooth connection setup raised alarm=%s: %s", self.alarm_id, exc)
+        if self.ended_reason is not None:
+            self.player.stop()
+            await self._clear_current()
+            return
         self._recast()
         try:
             while self.ended_reason is None:
@@ -325,11 +338,35 @@ async def start_session(alarm_id: int, sound_url: str | list[str], device_name: 
     global current_session
     async with _session_lock:
         if current_session is not None and current_session.ended_reason is None:
-            return current_session.status()
+            requested_kind = str(settings.get("session_kind") or "wake")
+            if current_session.session_kind == "bed_entry_announcement" and requested_kind != "bed_entry_announcement":
+                current_session.player.stop()
+                current_session._end("preempted")
+            else:
+                return current_session.status()
         session = RingSession(alarm_id, sound_url, device_name, settings)
         current_session = session
         session._task = asyncio.create_task(session.start())
         return session.status()
+
+
+async def start_announcement(
+    alarm_id: int,
+    sound_url: str,
+    device_name: str,
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    announcement_settings = {
+        **settings,
+        "session_kind": "bed_entry_announcement",
+        "session_label": "入床を検知しました",
+        "wake_check": False,
+        "emfit_enabled": False,
+        "bt_stack_restart": False,
+        "reconnect_on_start": False,
+        "max_session_sec": 30,
+    }
+    return await start_session(alarm_id, sound_url, device_name, announcement_settings)
 
 
 def snooze_session() -> bool:

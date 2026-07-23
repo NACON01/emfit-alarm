@@ -113,7 +113,10 @@ def _enter_cooldown_or_clear(alarm: dict[str, Any], now: datetime, active: bool)
 
 
 async def _start_ring(alarm: dict[str, Any], settings: dict[str, Any], reason: str) -> bool:
-    if ring.current_session is not None:
+    if (
+        ring.current_session is not None
+        and ring.current_session.session_kind != "bed_entry_announcement"
+    ):
         return False
     sound_urls = _sound_urls_for_alarm(alarm, settings)
     if not sound_urls:

@@ -20,6 +20,7 @@ import player
 import emfit
 import ring
 import anti_doze
+import bed_entry
 from db import create_alarm, delete_alarm, get_all_alarms, get_alarm, get_settings, init_db, update_alarm, update_settings
 from scheduler import get_next_alarm, scheduler_loop
 
@@ -507,6 +508,7 @@ def _status_payload() -> dict[str, Any]:
         "emfit": emfit.last_status.copy(),
         "next_alarm": get_next_alarm(),
         "anti_doze": anti_doze.get_status(),
+        "bed_entry": bed_entry.get_status(),
     }
 
 
@@ -514,7 +516,8 @@ async def emfit_poller() -> None:
     while True:
         settings = get_settings()
         if settings.get("emfit_enabled", True):
-            await emfit.get_in_bed()
+            in_bed = await emfit.get_in_bed()
+            await bed_entry.observe(in_bed)
         await asyncio.sleep(max(1.0, float(settings.get("poll_sec", 5))))
 
 

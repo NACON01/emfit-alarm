@@ -35,6 +35,7 @@ async def test_api_smoke(tmp_path, monkeypatch):
     status_json = await alarm_app.api_status()
     assert "state" in status_json
     assert "emfit" in status_json
+    assert "bed_entry" in status_json
 
     alarms = await alarm_app.api_get_alarms()
     assert isinstance(alarms, list)

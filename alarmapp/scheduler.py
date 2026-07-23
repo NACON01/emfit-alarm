@@ -85,7 +85,10 @@ def _settings_for_alarm(alarm: dict[str, Any], settings: dict[str, Any]) -> dict
 async def scheduler_loop() -> None:
     while True:
         await asyncio.sleep(5)
-        if ring.current_session is not None:
+        if (
+            ring.current_session is not None
+            and ring.current_session.session_kind != "bed_entry_announcement"
+        ):
             continue
 
         alarms = get_all_alarms()
@@ -132,7 +135,7 @@ async def scheduler_loop() -> None:
             break
 
 
-def get_next_alarm() -> dict[str, Any] | None:
+def get_next_alarm(now: datetime | None = None) -> dict[str, Any] | None:
     alarms = [
         alarm
         for alarm in get_all_alarms()
@@ -141,7 +144,7 @@ def get_next_alarm() -> dict[str, Any] | None:
     if not alarms:
         return None
 
-    now = datetime.now()
+    now = now or datetime.now()
     best: tuple[datetime, dict[str, Any]] | None = None
     for alarm in alarms:
         alarm_time = str(alarm.get("time") or "")
