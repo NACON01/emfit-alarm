@@ -60,6 +60,7 @@ async def test_api_smoke(tmp_path, monkeypatch):
             label="No dozing",
             time="01:00",
             monitor_start="18:00",
+            anti_doze_delay_min=10,
             reentry_block_min=90,
             repeat_days=[0, 1],
             enabled=True,
@@ -72,6 +73,7 @@ async def test_api_smoke(tmp_path, monkeypatch):
     )
     assert anti_doze["alarm_kind"] == "anti_doze"
     assert anti_doze["monitor_start"] == "18:00"
+    assert anti_doze["anti_doze_delay_min"] == 10
     assert anti_doze["reentry_block_min"] == 90
 
     imported = await alarm_app.api_download_youtube_sound(

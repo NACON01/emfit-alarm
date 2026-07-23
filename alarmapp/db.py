@@ -31,6 +31,7 @@ ALARM_FIELDS = {
     "label",
     "time",
     "monitor_start",
+    "anti_doze_delay_min",
     "reentry_block_min",
     "repeat_days",
     "enabled",
@@ -112,6 +113,7 @@ def init_db() -> None:
                 label TEXT,
                 time TEXT,
                 monitor_start TEXT,
+                anti_doze_delay_min INTEGER NOT NULL DEFAULT 20,
                 reentry_block_min INTEGER NOT NULL DEFAULT 0,
                 repeat_days TEXT,
                 enabled INTEGER,
@@ -127,6 +129,7 @@ def init_db() -> None:
         )
         _ensure_column(conn, "alarms", "alarm_kind", "TEXT NOT NULL DEFAULT 'wake'")
         _ensure_column(conn, "alarms", "monitor_start", "TEXT")
+        _ensure_column(conn, "alarms", "anti_doze_delay_min", "INTEGER NOT NULL DEFAULT 20")
         _ensure_column(conn, "alarms", "reentry_block_min", "INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """
@@ -176,6 +179,13 @@ def create_alarm(**kwargs: Any) -> dict[str, Any]:
         "label": kwargs.get("label") or "Alarm",
         "time": kwargs.get("time") or "07:00",
         "monitor_start": kwargs.get("monitor_start"),
+        "anti_doze_delay_min": max(
+            1,
+            min(
+                720,
+                int(20 if kwargs.get("anti_doze_delay_min") is None else kwargs["anti_doze_delay_min"]),
+            ),
+        ),
         "reentry_block_min": max(0, min(720, int(kwargs.get("reentry_block_min") or 0))),
         "repeat_days": _json_text(kwargs.get("repeat_days"), []),
         "enabled": int(bool(kwargs.get("enabled", True))),
@@ -192,12 +202,12 @@ def create_alarm(**kwargs: Any) -> dict[str, Any]:
         cur = conn.execute(
             """
             INSERT INTO alarms (
-                alarm_kind, label, time, monitor_start, reentry_block_min,
+                alarm_kind, label, time, monitor_start, anti_doze_delay_min, reentry_block_min,
                 repeat_days, enabled, sound_type, sound_ref,
                 volume, devices, wake_check, last_fired_date, created_at
             )
             VALUES (
-                :alarm_kind, :label, :time, :monitor_start, :reentry_block_min,
+                :alarm_kind, :label, :time, :monitor_start, :anti_doze_delay_min, :reentry_block_min,
                 :repeat_days, :enabled, :sound_type, :sound_ref,
                 :volume, :devices, :wake_check, :last_fired_date, :created_at
             )
@@ -240,6 +250,8 @@ def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
             value = int(bool(value))
         elif key == "volume" and value is not None:
             value = float(value)
+        elif key == "anti_doze_delay_min" and value is not None:
+            value = max(1, min(720, int(value)))
         elif key == "reentry_block_min" and value is not None:
             value = max(0, min(720, int(value)))
         updates[key] = value
@@ -256,7 +268,15 @@ def update_alarm(alarm_id: int, **kwargs: Any) -> dict[str, Any] | None:
         conn.execute(f"UPDATE alarms SET {assignments} WHERE id = :id", updates)
         if any(
             key in updates
-            for key in {"alarm_kind", "time", "monitor_start", "reentry_block_min", "repeat_days", "enabled"}
+            for key in {
+                "alarm_kind",
+                "time",
+                "monitor_start",
+                "anti_doze_delay_min",
+                "reentry_block_min",
+                "repeat_days",
+                "enabled",
+            }
         ):
             conn.execute("DELETE FROM anti_doze_runtime WHERE alarm_id = :id", {"id": alarm_id})
         conn.commit()

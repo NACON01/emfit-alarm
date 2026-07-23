@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Wake Alarm</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260723-anti-doze">
-    <script src="/static/app.js?v=20260723-anti-doze" defer></script>
+    <link rel="stylesheet" href="/static/style.css?v=20260724-anti-doze-delay">
+    <script src="/static/app.js?v=20260724-anti-doze-delay" defer></script>
   </head>
   <body>
     <header id="hero-header" class="hero-header">
@@ -212,11 +212,15 @@
               <input id="alarm-time" class="time-input" type="time" required>
             </label>
             <div id="anti-doze-options" class="anti-doze-fields hidden">
-              <div class="field-help">監視中に横になると20分後に鳴ります。20分前に離床した場合は最初から数え直します。</div>
+              <label>
+                <span>横になってから鳴るまで（分）</span>
+                <input id="alarm-anti-doze-delay-min" type="number" min="1" max="720" step="1" value="20">
+                <span class="field-help">監視中に横になってからアラームを鳴らすまでの時間です。1～720分、1分単位で指定できます。</span>
+              </label>
               <label>
                 <span>再横臥を禁止する時間（分）</span>
                 <input id="alarm-reentry-block-min" type="number" min="0" max="720" step="1" value="0">
-                <span class="field-help">アラーム後に離床が確認された時点から計測します。制限中に再び横になると即座に鳴ります。0分で無効。</span>
+                <span class="field-help">鳴動前・鳴動後を問わず離床が確認された時点から計測します。制限中に再び横になると即座に鳴ります。0分で無効。</span>
               </label>
             </div>
           </section>

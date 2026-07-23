@@ -28,7 +28,6 @@ LOGGER = logging.getLogger(__name__)
 COUNTING = "COUNTING"
 FIRED = "FIRED"
 COOLDOWN = "COOLDOWN"
-ANTI_DOZE_DELAY_SEC = 20 * 60
 
 
 def _parse_time(value: Any) -> time | None:
@@ -94,6 +93,25 @@ def _same_ring_session(alarm_id: int) -> bool:
     )
 
 
+def _delay_sec(alarm: dict[str, Any]) -> int:
+    value = alarm.get("anti_doze_delay_min")
+    return max(1, min(720, int(20 if value is None else value))) * 60
+
+
+def _enter_cooldown_or_clear(alarm: dict[str, Any], now: datetime, active: bool) -> None:
+    alarm_id = int(alarm["id"])
+    block_min = max(0, min(720, int(alarm.get("reentry_block_min") or 0)))
+    if active and block_min > 0:
+        set_anti_doze_runtime(
+            alarm_id,
+            phase=COOLDOWN,
+            in_bed_since=None,
+            cooldown_until=(now + timedelta(minutes=block_min)).isoformat(timespec="seconds"),
+        )
+    else:
+        clear_anti_doze_runtime(alarm_id)
+
+
 async def _start_ring(alarm: dict[str, Any], settings: dict[str, Any], reason: str) -> bool:
     if ring.current_session is not None:
         return False
@@ -144,16 +162,7 @@ async def _tick_alarm(
         if _same_ring_session(alarm_id) or ring.current_session is not None:
             return
         if in_bed is False:
-            block_min = max(0, min(720, int(alarm.get("reentry_block_min") or 0)))
-            if active and block_min > 0:
-                set_anti_doze_runtime(
-                    alarm_id,
-                    phase=COOLDOWN,
-                    in_bed_since=None,
-                    cooldown_until=(now + timedelta(minutes=block_min)).isoformat(timespec="seconds"),
-                )
-            else:
-                clear_anti_doze_runtime(alarm_id)
+            _enter_cooldown_or_clear(alarm, now, active)
         return
 
     if phase == COOLDOWN:
@@ -179,6 +188,9 @@ async def _tick_alarm(
         return
 
     if phase == COUNTING:
+        if in_bed is False:
+            _enter_cooldown_or_clear(alarm, now, active)
+            return
         if in_bed is not True:
             clear_anti_doze_runtime(alarm_id)
             return
@@ -191,7 +203,7 @@ async def _tick_alarm(
                 cooldown_until=None,
             )
             return
-        delay_sec = ANTI_DOZE_DELAY_SEC
+        delay_sec = _delay_sec(alarm)
         if (now - in_bed_since).total_seconds() >= delay_sec:
             await _start_ring(alarm, settings, "continuous_in_bed")
         return
@@ -227,7 +239,6 @@ async def anti_doze_loop() -> None:
 
 def get_status(now: datetime | None = None) -> dict[str, Any]:
     current = now or datetime.now()
-    delay_sec = ANTI_DOZE_DELAY_SEC
     candidates: list[dict[str, Any]] = []
 
     for alarm in _anti_doze_alarms():
@@ -241,6 +252,7 @@ def get_status(now: datetime | None = None) -> dict[str, Any]:
         remaining_sec = None
         cooldown_remaining_sec = None
         if phase == COUNTING and in_bed_since is not None:
+            delay_sec = _delay_sec(alarm)
             remaining_sec = max(0, int(delay_sec - (current - in_bed_since).total_seconds()))
         if phase == COOLDOWN and cooldown_until is not None:
             cooldown_remaining_sec = max(0, int((cooldown_until - current).total_seconds()))
@@ -252,6 +264,7 @@ def get_status(now: datetime | None = None) -> dict[str, Any]:
                 "enabled": bool(alarm.get("enabled")),
                 "monitor_start": alarm.get("monitor_start"),
                 "monitor_end": alarm.get("time"),
+                "delay_min": _delay_sec(alarm) // 60,
                 "monitoring_now": is_monitoring_now(alarm, current),
                 "remaining_sec": remaining_sec,
                 "cooldown_remaining_sec": cooldown_remaining_sec,

@@ -80,6 +80,7 @@
     alarmTime: $("alarm-time"),
     alarmTimeLabel: $("alarm-time-label"),
     alarmMonitorStart: $("alarm-monitor-start"),
+    alarmAntiDozeDelayMin: $("alarm-anti-doze-delay-min"),
     alarmReentryBlockMin: $("alarm-reentry-block-min"),
     antiDozeTimeFields: $("anti-doze-time-fields"),
     antiDozeOptions: $("anti-doze-options"),
@@ -1200,7 +1201,7 @@
       if (antiDoze) {
         const kind = document.createElement("span");
         kind.className = "kind-mini";
-        kind.textContent = `寝落ち防止 · 再横臥禁止 ${Number(alarm.reentry_block_min) || 0}分`;
+        kind.textContent = `寝落ち防止 ${Number(alarm.anti_doze_delay_min) || 20}分 · 再横臥禁止 ${Number(alarm.reentry_block_min) || 0}分`;
         content.appendChild(kind);
       }
 
@@ -1866,6 +1867,7 @@
     els.alarmKind.value = editing ? alarm.alarm_kind || "wake" : "wake";
     els.alarmTime.value = editing ? alarm.time || "07:00" : "07:00";
     els.alarmMonitorStart.value = editing ? alarm.monitor_start || "18:00" : "18:00";
+    els.alarmAntiDozeDelayMin.value = editing ? Number(alarm.anti_doze_delay_min) || 20 : 20;
     els.alarmReentryBlockMin.value = editing ? Number(alarm.reentry_block_min) || 0 : 0;
     els.alarmLabel.value = editing ? alarm.label || "" : "";
     els.alarmEnabled.checked = editing ? Boolean(alarm.enabled) : true;
@@ -1963,6 +1965,12 @@
       els.alarmMonitorStart.focus();
       return;
     }
+    const antiDozeDelayMin = Number(els.alarmAntiDozeDelayMin.value);
+    if (antiDoze && (!Number.isInteger(antiDozeDelayMin) || antiDozeDelayMin < 1 || antiDozeDelayMin > 720)) {
+      showFormError("横になってから鳴るまでの時間は1～720分で入力してください。");
+      els.alarmAntiDozeDelayMin.focus();
+      return;
+    }
     const reentryBlockMin = Number(els.alarmReentryBlockMin.value);
     if (antiDoze && (!Number.isInteger(reentryBlockMin) || reentryBlockMin < 0 || reentryBlockMin > 720)) {
       showFormError("再横臥を禁止する時間は0～720分で入力してください。");
@@ -1978,6 +1986,7 @@
           label: els.alarmLabel.value.trim() || "Alarm",
           time: els.alarmTime.value,
           monitor_start: antiDoze ? els.alarmMonitorStart.value : null,
+          anti_doze_delay_min: antiDoze ? antiDozeDelayMin : 20,
           reentry_block_min: antiDoze ? reentryBlockMin : 0,
           repeat_days: Array.from(selectedDays).sort((a, b) => a - b),
           enabled: els.alarmEnabled.checked,

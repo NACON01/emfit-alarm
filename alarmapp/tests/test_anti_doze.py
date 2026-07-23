@@ -26,6 +26,7 @@ def create_anti_doze(**overrides):
         "label": "寝落ち防止",
         "time": "01:00",
         "monitor_start": "18:00",
+        "anti_doze_delay_min": 20,
         "reentry_block_min": 60,
         "repeat_days": [0],
         "enabled": True,
@@ -73,25 +74,48 @@ async def test_continuous_in_bed_for_twenty_minutes_starts_existing_ring(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_leaving_before_twenty_minutes_resets_countdown(monkeypatch):
-    alarm = create_anti_doze()
+async def test_custom_delay_starts_ring_at_configured_minute(monkeypatch):
+    alarm = create_anti_doze(anti_doze_delay_min=10)
     calls = []
 
-    async def fake_start(*args):
-        calls.append(args)
-        return {"alarm_id": alarm["id"], "session_kind": "anti_doze"}
+    async def fake_start(alarm_id, _urls, _device, settings):
+        calls.append(alarm_id)
+        return {"alarm_id": alarm_id, "session_kind": settings["session_kind"]}
 
     monkeypatch.setattr(anti_doze.ring, "start_session", fake_start)
     started = MONDAY.replace(hour=20)
 
     await anti_doze.tick(started, True)
-    await anti_doze.tick(started + timedelta(minutes=10), False)
-    assert db.get_anti_doze_runtime(alarm["id"]) is None
-
-    await anti_doze.tick(started + timedelta(minutes=11), True)
-    await anti_doze.tick(started + timedelta(minutes=30), True)
-
+    await anti_doze.tick(started + timedelta(minutes=9, seconds=59), True)
     assert calls == []
+
+    await anti_doze.tick(started + timedelta(minutes=10), True)
+    assert calls == [alarm["id"]]
+
+
+@pytest.mark.asyncio
+async def test_leaving_before_alarm_starts_cooldown_from_detected_exit():
+    alarm = create_anti_doze(anti_doze_delay_min=20, reentry_block_min=60)
+    started = MONDAY.replace(hour=20)
+    exited = started + timedelta(minutes=10)
+
+    await anti_doze.tick(started, True)
+    await anti_doze.tick(exited, False)
+
+    state = db.get_anti_doze_runtime(alarm["id"])
+    assert state["phase"] == anti_doze.COOLDOWN
+    assert datetime.fromisoformat(state["cooldown_until"]) == exited + timedelta(minutes=60)
+
+
+@pytest.mark.asyncio
+async def test_leaving_before_alarm_with_zero_cooldown_returns_to_idle():
+    alarm = create_anti_doze(anti_doze_delay_min=20, reentry_block_min=0)
+    started = MONDAY.replace(hour=20)
+
+    await anti_doze.tick(started, True)
+    await anti_doze.tick(started + timedelta(minutes=10), False)
+
+    assert db.get_anti_doze_runtime(alarm["id"]) is None
 
 
 @pytest.mark.asyncio
@@ -160,6 +184,19 @@ async def test_unknown_sensor_value_cancels_continuous_count(monkeypatch):
     await anti_doze.tick(started + timedelta(minutes=10))
 
     assert db.get_anti_doze_runtime(alarm["id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_status_uses_configured_delay():
+    alarm = create_anti_doze(anti_doze_delay_min=10)
+    started = MONDAY.replace(hour=20)
+    await anti_doze.tick(started, True)
+
+    status = anti_doze.get_status(started + timedelta(minutes=3))
+
+    assert status["alarm_id"] == alarm["id"]
+    assert status["delay_min"] == 10
+    assert status["remaining_sec"] == 7 * 60
 
 
 def test_invalid_or_equal_monitoring_times_are_rejected():

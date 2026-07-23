@@ -85,4 +85,5 @@ def test_init_db_migrates_existing_alarm_table(tmp_path, monkeypatch):
 
     assert alarm["alarm_kind"] == "wake"
     assert alarm["monitor_start"] is None
+    assert alarm["anti_doze_delay_min"] == 20
     assert alarm["reentry_block_min"] == 0

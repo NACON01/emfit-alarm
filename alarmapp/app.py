@@ -92,6 +92,7 @@ def public_alarm(alarm: dict[str, Any]) -> dict[str, Any]:
         **alarm,
         "alarm_kind": alarm.get("alarm_kind") or "wake",
         "monitor_start": alarm.get("monitor_start"),
+        "anti_doze_delay_min": int(alarm.get("anti_doze_delay_min") or 20),
         "reentry_block_min": int(alarm.get("reentry_block_min") or 0),
         "enabled": bool(alarm.get("enabled")),
         "wake_check": bool(alarm.get("wake_check")),
@@ -524,6 +525,7 @@ if FASTAPI_AVAILABLE:
         label: str = "Alarm"
         time: str
         monitor_start: str | None = None
+        anti_doze_delay_min: int = Field(default=20, ge=1, le=720)
         reentry_block_min: int = Field(default=0, ge=0, le=720)
         repeat_days: list[int] = Field(default_factory=list)
         enabled: bool = True
@@ -539,6 +541,7 @@ if FASTAPI_AVAILABLE:
         label: str | None = None
         time: str | None = None
         monitor_start: str | None = None
+        anti_doze_delay_min: int | None = Field(default=None, ge=1, le=720)
         reentry_block_min: int | None = Field(default=None, ge=0, le=720)
         repeat_days: list[int] | None = None
         enabled: bool | None = None
@@ -765,7 +768,7 @@ else:
     class AlarmCreate(_CompatModel):
         _defaults = {
             "alarm_kind": "wake", "label": "Alarm", "time": "07:00",
-            "monitor_start": None, "reentry_block_min": 0,
+            "monitor_start": None, "anti_doze_delay_min": 20, "reentry_block_min": 0,
             "repeat_days": [], "enabled": True,
             "sound_type": "upload", "sound_ref": "alarm_long.mp3", "volume": 1.0,
             "devices": ["Miku-Miku Echo"], "wake_check": True,
@@ -774,7 +777,7 @@ else:
     class AlarmUpdate(_CompatModel):
         _defaults = {
             "alarm_kind": None, "label": None, "time": None,
-            "monitor_start": None, "reentry_block_min": None,
+            "monitor_start": None, "anti_doze_delay_min": None, "reentry_block_min": None,
             "repeat_days": None, "enabled": None,
             "sound_type": None, "sound_ref": None, "volume": None, "devices": None,
             "wake_check": None, "last_fired_date": None,

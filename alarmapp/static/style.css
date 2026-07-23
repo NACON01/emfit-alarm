@@ -656,6 +656,7 @@ input[type="range"]::-webkit-slider-thumb {
 .kind-mini {
   display: inline-flex;
   width: max-content;
+  max-width: 100%;
   margin-top: 10px;
   padding: 5px 9px;
   border: 1px solid rgba(155, 89, 182, 0.45);
@@ -663,6 +664,7 @@ input[type="range"]::-webkit-slider-thumb {
   color: #c9a7f2;
   font-size: 0.75rem;
   font-weight: 800;
+  line-height: 1.4;
 }
 
 .weekday-mini-row {
